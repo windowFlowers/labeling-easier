@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-electron/
+.vite/
+out/
+
+# Packaged installers and unpacked apps
+release/
+*.exe
+*.blockmap
+builder-debug.yml
+
+# Local verification artifacts
+artifacts/
+coverage/
+playwright-report/
+test-results/
+*.log
+
+# Local app/project data
+*.labelproj
+*.labelproj.*
+cache/
+.cache/
+projects/
+datasets/
+frames/
+thumbs/
+exports/
+*.sqlite
+*.sqlite3
+*.db
+
+# Environment and machine-local config
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+
+# Editor and agent-local state
+.idea/
+.vscode/
+.superpowers/
+.codex/

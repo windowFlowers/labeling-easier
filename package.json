@@ -1,0 +1,87 @@
+{
+  "name": "labeling-easier",
+  "version": "0.1.5",
+  "description": "Windows desktop dataset annotation tool for images, videos, AI-assisted YOLO labeling, review, and multi-format export.",
+  "author": "CZX",
+  "main": "dist-electron/main/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1 --strictPort\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "tsc -p tsconfig.json --noEmit && vite build && vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts",
+    "clean": "node scripts/clean-build.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package": "npm run clean && npm run build && electron-builder --win nsis --x64 && node scripts/prune-release.mjs",
+    "package:dir": "npm run clean && npm run build && electron-builder --win dir --x64"
+  },
+  "build": {
+    "appId": "com.labelingeasier.app",
+    "productName": "Labeling Easier",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "resources/icon.png",
+      "resources/icon.ico",
+      "scripts/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "scripts/setup-ai-env.ps1",
+        "to": "setup-ai-env.ps1"
+      },
+      {
+        "from": "scripts/ai_worker.py",
+        "to": "ai_worker.py"
+      },
+      {
+        "from": "resources/models",
+        "to": "models",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "icon": "resources/icon.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Labeling Easier",
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": false
+    }
+  },
+  "dependencies": {
+    "lucide-react": "^0.555.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12",
+    "jsdom": "^27.2.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4",
+    "vitest": "^4.0.14",
+    "wait-on": "^9.0.3"
+  }
+}
