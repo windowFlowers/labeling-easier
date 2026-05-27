@@ -1,6 +1,8 @@
 import {
   Bot,
+  Check,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -17,7 +19,7 @@ import {
   X
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { PointerEvent, WheelEvent } from 'react';
+import type { CSSProperties, PointerEvent, WheelEvent } from 'react';
 import type { AiDetection, AiWorkerEvent } from '../main/services/aiWorker';
 import { nowIso, stableId } from '../shared/ids';
 import { markFrameReviewed } from '../shared/review';
@@ -40,7 +42,7 @@ type HistoryEntry = {
 };
 type Language = 'en' | 'zh';
 type Theme = 'light' | 'dark';
-type SettingsTab = 'general' | 'appearance' | 'shortcuts' | 'ai' | 'naming';
+type SettingsTab = 'general' | 'appearance' | 'shortcuts' | 'ai';
 type ShortcutAction =
   | 'draw'
   | 'previousFrame'
@@ -222,6 +224,7 @@ const TEXT = {
     openLink: 'Open {name}',
     namingPreset: 'Naming style',
     namingTemplate: 'Custom template',
+    namingPreview: 'Preview',
     namingCurrent: 'Current',
     namingCompact: 'No underscores',
     namingShortFrame: 'Short frame number',
@@ -339,6 +342,7 @@ const TEXT = {
     openLink: '打开 {name}',
     namingPreset: '命名样式',
     namingTemplate: '自定义模板',
+    namingPreview: '预览',
     namingCurrent: '当前规则',
     namingCompact: '无下划线',
     namingShortFrame: '短帧号',
@@ -1317,6 +1321,8 @@ export default function App() {
           shortcuts={shortcuts}
           namingPreset={namingPreset}
           namingTemplate={namingTemplate}
+          previewMedia={activeMedia}
+          previewFrame={activeFrame}
           aiLabelMode={aiLabelMode}
           aiConfidenceThreshold={aiConfidenceThreshold}
           recordingShortcut={recordingShortcut}
@@ -1372,6 +1378,8 @@ function SettingsDialog({
   shortcuts,
   namingPreset,
   namingTemplate,
+  previewMedia,
+  previewFrame,
   aiLabelMode,
   aiConfidenceThreshold,
   recordingShortcut,
@@ -1401,6 +1409,8 @@ function SettingsDialog({
   shortcuts: ShortcutMap;
   namingPreset: NamingPreset;
   namingTemplate: string;
+  previewMedia?: MediaItem;
+  previewFrame?: FrameRecord;
   aiLabelMode: AiLabelMode;
   aiConfidenceThreshold: number;
   recordingShortcut?: ShortcutAction;
@@ -1422,12 +1432,24 @@ function SettingsDialog({
   onClose: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+  const namingPreview = previewAnnotationName(previewMedia, previewFrame, namingPreset, namingTemplate);
+  const aiModeOptions = [
+    { id: 'ask', label: t('aiModeAsk'), description: t('aiModePromptHelp') },
+    { id: 'overwrite', label: t('aiModeOverwrite'), description: t('aiModeOverwriteHelp') },
+    { id: 'emptyOnly', label: t('aiModeEmptyOnly'), description: t('aiModeEmptyOnlyHelp') },
+    { id: 'unreviewedOnly', label: t('aiModeUnreviewedOnly'), description: t('aiModeUnreviewedOnlyHelp') }
+  ];
+  const namingOptions = NAMING_PRESETS.map((preset) => ({
+    id: preset.id,
+    label: namingPresetLabel(preset.id, t),
+    description: preset.id === 'custom' ? namingTemplate : preset.example
+  }));
+  const confidenceProgress = ((aiConfidenceThreshold - 0.01) / 0.98) * 100;
   const tabs: Array<{ id: SettingsTab; label: string }> = [
     { id: 'general', label: t('settingsGeneral') },
     { id: 'appearance', label: t('settingsAppearance') },
     { id: 'shortcuts', label: t('settingsKeyboardShortcuts') },
-    { id: 'ai', label: t('settingsAi') },
-    { id: 'naming', label: t('settingsNaming') }
+    { id: 'ai', label: t('settingsAi') }
   ];
 
   return (
@@ -1484,6 +1506,27 @@ function SettingsDialog({
                   checked={autoReviewSeenFrames}
                   onChange={onAutoReviewSeenFramesChange}
                 />
+                <div className="settings-subsection">
+                  <h4>{t('settingsNaming')}</h4>
+                  <SettingsSelect
+                    label={t('namingPreset')}
+                    value={namingPreset}
+                    options={namingOptions}
+                    onChange={(value) => onNamingPresetChange(value as NamingPreset)}
+                  />
+                  <label>
+                    {t('namingTemplate')}
+                    <input
+                      value={namingTemplate}
+                      onChange={(event) => onNamingTemplateChange(event.target.value)}
+                      disabled={namingPreset !== 'custom'}
+                    />
+                  </label>
+                  <div className="naming-preview" aria-label={t('namingPreview')}>
+                    <span>{t('namingPreview')}</span>
+                    <strong>{namingPreview}</strong>
+                  </div>
+                </div>
               </div>
             ) : null}
             {activeTab === 'appearance' ? (
@@ -1540,11 +1583,13 @@ function SettingsDialog({
                   {t('aiConfidence')}
                   <div className="range-row">
                     <input
+                      className="confidence-range"
                       type="range"
                       min="0.01"
                       max="0.99"
                       step="0.01"
                       value={aiConfidenceThreshold}
+                      style={{ '--range-progress': `${confidenceProgress}%` } as CSSProperties}
                       onChange={(event) => onAiConfidenceThresholdChange(Number(event.target.value))}
                     />
                     <input
@@ -1558,14 +1603,10 @@ function SettingsDialog({
                     />
                   </div>
                 </label>
-                <ChoiceGrid
+                <SettingsSelect
+                  label={t('aiModePromptTitle')}
                   value={aiLabelMode}
-                  options={[
-                    { id: 'ask', label: t('aiModeAsk'), description: t('aiModePromptHelp') },
-                    { id: 'overwrite', label: t('aiModeOverwrite'), description: t('aiModeOverwriteHelp') },
-                    { id: 'emptyOnly', label: t('aiModeEmptyOnly'), description: t('aiModeEmptyOnlyHelp') },
-                    { id: 'unreviewedOnly', label: t('aiModeUnreviewedOnly'), description: t('aiModeUnreviewedOnlyHelp') }
-                  ]}
+                  options={aiModeOptions}
                   onChange={(value) => onAiLabelModeChange(value as AiLabelMode)}
                 />
                 <div className="link-list">
@@ -1576,28 +1617,6 @@ function SettingsDialog({
                     </button>
                   ))}
                 </div>
-              </div>
-            ) : null}
-            {activeTab === 'naming' ? (
-              <div className="settings-section">
-                <h3>{t('settingsNaming')}</h3>
-                <ChoiceGrid
-                  value={namingPreset}
-                  options={NAMING_PRESETS.map((preset) => ({
-                    id: preset.id,
-                    label: namingPresetLabel(preset.id, t),
-                    description: preset.id === 'custom' ? namingTemplate : preset.example
-                  }))}
-                  onChange={(value) => onNamingPresetChange(value as NamingPreset)}
-                />
-                <label>
-                  {t('namingTemplate')}
-                  <input
-                    value={namingTemplate}
-                    onChange={(event) => onNamingTemplateChange(event.target.value)}
-                    disabled={namingPreset !== 'custom'}
-                  />
-                </label>
               </div>
             ) : null}
           </div>
@@ -1648,6 +1667,68 @@ function AiModeDialog({
           />
         </div>
       </section>
+    </div>
+  );
+}
+
+function SettingsSelect({
+  label,
+  value,
+  options,
+  onChange
+}: {
+  label: string;
+  value: string;
+  options: Array<{ id: string; label: string; description: string }>;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = options.find((option) => option.id === value) ?? options[0];
+
+  return (
+    <div
+      className="settings-select"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
+      <span className="settings-select-label">{label}</span>
+      <button
+        className="settings-select-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={`${label}: ${selected.label}`}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span>{selected.label}</span>
+        <ChevronDown size={17} />
+      </button>
+      {open ? (
+        <div className="settings-select-menu" role="listbox" aria-label={label}>
+          {options.map((option) => {
+            const active = option.id === value;
+            return (
+              <button
+                key={option.id}
+                className={active ? 'settings-select-option active' : 'settings-select-option'}
+                role="option"
+                aria-label={option.label}
+                aria-selected={active}
+                onClick={() => {
+                  onChange(option.id);
+                  setOpen(false);
+                }}
+              >
+                <span>
+                  <strong>{option.label}</strong>
+                  <small>{option.description}</small>
+                </span>
+                {active ? <Check size={18} /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2122,8 +2203,18 @@ function nextAnnotationName(media: MediaItem, frame: FrameRecord, preset: Naming
 
 function annotationNameAt(media: MediaItem, frame: FrameRecord, boxIndex: number, preset: NamingPreset, customTemplate: string): string {
   const prefix = sanitizePrefix(media.annotationNamePrefix || basenameWithoutExt(media.name));
+  return renderAnnotationName(prefix, frame.index + 1, boxIndex, preset, customTemplate);
+}
+
+function previewAnnotationName(media: MediaItem | undefined, frame: FrameRecord | undefined, preset: NamingPreset, customTemplate: string): string {
+  const prefix = sanitizePrefix(media ? media.annotationNamePrefix || basenameWithoutExt(media.name) : 'clip');
+  const frameNumber = frame ? frame.index + 1 : 1;
+  const boxIndex = frame ? frame.annotations.length + 1 : 1;
+  return renderAnnotationName(prefix, frameNumber, boxIndex, preset, customTemplate);
+}
+
+function renderAnnotationName(prefix: string, frameNumber: number, boxIndex: number, preset: NamingPreset, customTemplate: string): string {
   const template = namingTemplateForPreset(preset, customTemplate);
-  const frameNumber = frame.index + 1;
   return template
     .replaceAll('{prefix}', prefix)
     .replaceAll('{frame:000000}', String(frameNumber).padStart(6, '0'))

@@ -281,7 +281,7 @@ describe('Labeling Easier editor shell', () => {
     expect(screen.getByRole('button', { name: '外观' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '键盘快捷键' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'AI 标注' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '命名' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '命名' })).not.toBeInTheDocument();
   });
 
   it('customizes shortcuts, blocks conflicts, and resets defaults', async () => {
@@ -341,6 +341,37 @@ describe('Labeling Easier editor shell', () => {
     expect(localStorage.getItem('labeling-easier.autoReviewManualEdits')).toBe('true');
     fireEvent.click(screen.getByRole('switch', { name: 'Auto-mark reviewed after viewing a frame' }));
     expect(localStorage.getItem('labeling-easier.autoReviewSeenFrames')).toBe('true');
+  });
+
+  it('keeps naming controls in General and previews custom templates live', () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+
+    expect(screen.queryByRole('button', { name: 'Naming' })).not.toBeInTheDocument();
+    expect(screen.getByText('Naming style')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Naming style: Current' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Naming style: Current' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Custom template' }));
+    fireEvent.change(screen.getByLabelText('Custom template'), { target: { value: '{prefix}-{frame:000000}-{box:00}' } });
+
+    expect(localStorage.getItem('labeling-easier.namingPreset')).toBe('custom');
+    expect(localStorage.getItem('labeling-easier.namingTemplate')).toBe('{prefix}-{frame:000000}-{box:00}');
+    expect(screen.getByText('Preview')).toBeInTheDocument();
+    expect(screen.getByText('clip-000001-01')).toBeInTheDocument();
+  });
+
+  it('uses a dropdown selector for AI label mode settings', () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'AI labeling' }));
+    fireEvent.click(screen.getByRole('button', { name: 'AI labeling mode: Ask every time' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Only unlabeled frames' }));
+
+    expect(localStorage.getItem('labeling-easier.aiLabelMode')).toBe('emptyOnly');
+    expect(screen.getByRole('button', { name: 'AI labeling mode: Only unlabeled frames' })).toBeInTheDocument();
   });
 
   it('shows opened images as real image elements', async () => {
