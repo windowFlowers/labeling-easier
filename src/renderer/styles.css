@@ -721,7 +721,7 @@ select {
 .settings-layout {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);
-  gap: 28px;
+  gap: 48px;
   min-height: 0;
 }
 
@@ -745,7 +745,7 @@ select {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding-right: 4px;
+  padding: 0 4px 0 8px;
 }
 
 .settings-section h3,
@@ -1109,5 +1109,13 @@ select:focus {
 
   .workspace {
     grid-template-columns: 220px minmax(460px, 1fr) 280px;
+  }
+
+  .settings-layout {
+    gap: 36px;
+  }
+
+  .settings-content {
+    padding-left: 4px;
   }
 }
