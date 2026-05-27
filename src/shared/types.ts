@@ -66,6 +66,9 @@ export interface ProjectSettings {
   modelPath: string;
   ffmpegPath: string;
   confidenceThreshold: number;
+  namingTemplate?: string;
+  namingPreset?: NamingPreset;
+  aiLabelMode?: AiLabelMode;
 }
 
 export interface ExportHistoryEntry {
@@ -131,4 +134,25 @@ export interface LabelMeFile {
   imageData: null;
   imageHeight: number;
   imageWidth: number;
+}
+
+export type AiLabelMode = 'ask' | 'overwrite' | 'emptyOnly' | 'unreviewedOnly';
+export type NamingPreset = 'current' | 'compact' | 'shortFrame' | 'singleTarget' | 'frameOnly' | 'custom';
+export type ThemeMode = 'light' | 'dark' | 'system';
+
+export interface SessionState {
+  project?: Project;
+  projectDirectory?: string;
+  activeMediaId?: string;
+  activeFrameId?: string;
+  selectedAnnotationId?: string;
+  zoom?: number;
+  pan?: { x: number; y: number };
+}
+
+export interface ExportWriteResult {
+  saved: boolean;
+  outputPath?: string;
+  fileCount?: number;
+  format?: LabelFormat;
 }

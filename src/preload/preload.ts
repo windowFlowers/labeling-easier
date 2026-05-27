@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { AiWorkerEvent } from '../main/services/aiWorker';
 import type { AdvancedModelName } from '../main/services/modelService';
 import type { AddAnnotationInput } from '../shared/projectOps';
-import type { Annotation, LabelFormat, MediaItem, Project } from '../shared/types';
+import type { Annotation, ExportWriteResult, LabelFormat, MediaItem, Project, SessionState } from '../shared/types';
 
 export type MediaImportEvent =
   | { type: 'progress'; mediaId: string; progress: number }
@@ -20,6 +20,8 @@ const api = {
     ipcRenderer.invoke('media.openFile', ffmpegPath, ffprobePath),
   saveProject: (project: Project): Promise<{ saved: boolean; path?: string }> => ipcRenderer.invoke('project.save', project),
   autoSaveProject: (project: Project): Promise<{ saved: boolean; path?: string }> => ipcRenderer.invoke('project.autosave', project),
+  loadSessionState: (): Promise<SessionState | undefined> => ipcRenderer.invoke('session.load'),
+  saveSessionState: (state: SessionState): Promise<{ saved: boolean; path?: string }> => ipcRenderer.invoke('session.save', state),
   mediaUrl: (filePath: string): string => `labeling-easier-media://file/${encodeURIComponent(filePath.replace(/\\/g, '/'))}`,
   importImages: (): Promise<MediaItem[]> => ipcRenderer.invoke('media.importImages'),
   importVideos: (ffmpegPath: string, ffprobePath: string): Promise<MediaItem[]> =>
@@ -42,8 +44,11 @@ const api = {
   previousReviewFrame: (frameId: string) => ipcRenderer.invoke('review.previous', frameId),
   markReviewed: (frameId: string): Promise<Project | undefined> => ipcRenderer.invoke('review.markReviewed', frameId),
   exportRun: (project: Project, format: LabelFormat): Promise<unknown> => ipcRenderer.invoke('export.run', project, format),
+  exportToDirectory: (project: Project, format: LabelFormat): Promise<ExportWriteResult> => ipcRenderer.invoke('export.toDirectory', project, format),
   importRun: (format: LabelFormat, payload: unknown): Promise<Project> => ipcRenderer.invoke('import.run', format, payload),
   convertRun: (project: Project, format: LabelFormat): Promise<unknown> => ipcRenderer.invoke('convert.run', project, format),
+  openExternal: (url: string): Promise<{ opened: boolean }> => ipcRenderer.invoke('shell.openExternal', url),
+  fileExists: (filePath: string): Promise<boolean> => ipcRenderer.invoke('file.exists', filePath),
   bundledModelPath: (): Promise<string> => ipcRenderer.invoke('model.bundledPath'),
   chooseModelFile: (): Promise<string | undefined> => ipcRenderer.invoke('model.chooseFile'),
   downloadModel: (model: AdvancedModelName): Promise<string> => ipcRenderer.invoke('model.download', model),

@@ -1,6 +1,6 @@
 {
   "name": "labeling-easier",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Windows desktop dataset annotation tool for images, videos, AI-assisted YOLO labeling, review, and multi-format export.",
   "author": "CZX",
   "main": "dist-electron/main/main.js",
@@ -11,7 +11,7 @@
     "clean": "node scripts/clean-build.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "package": "npm run clean && npm run build && electron-builder --win nsis --x64 && node scripts/prune-release.mjs",
+    "package": "npm run clean && npm run build && electron-builder --win dir --x64 -c.win.signAndEditExecutable=false && node scripts/patch-exe-icon.mjs && electron-builder --win nsis --x64 --prepackaged \"release/win-unpacked\" -c.win.signAndEditExecutable=false && node scripts/prune-release.mjs",
     "package:dir": "npm run clean && npm run build && electron-builder --win dir --x64"
   },
   "build": {
@@ -46,7 +46,7 @@
       }
     ],
     "win": {
-      "signAndEditExecutable": false,
+      "signAndEditExecutable": true,
       "icon": "resources/icon.ico",
       "target": [
         "nsis"
@@ -55,9 +55,12 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "shortcutName": "Labeling Easier",
+      "installerIcon": "resources/icon.ico",
+      "uninstallerIcon": "resources/icon.ico",
+      "installerHeaderIcon": "resources/icon.ico",
       "allowToChangeInstallationDirectory": false,
       "deleteAppDataOnUninstall": false
     }
@@ -79,6 +82,7 @@
     "electron": "^39.2.7",
     "electron-builder": "^26.0.12",
     "jsdom": "^27.2.0",
+    "rcedit": "^5.0.2",
     "typescript": "^5.9.3",
     "vite": "^7.2.4",
     "vitest": "^4.0.14",

@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../../src/renderer/App';
 import type { AiWorkerEvent } from '../../src/main/services/aiWorker';
 import type { MediaImportEvent } from '../../src/preload/preload';
@@ -131,6 +131,7 @@ describe('desktop bridge actions', () => {
   beforeEach(() => {
     delete window.labelingEasier;
     localStorage.clear();
+    vi.useRealTimers();
   });
 
   it('reports when desktop file actions are unavailable', () => {
@@ -212,6 +213,11 @@ describe('Labeling Easier editor shell', () => {
   beforeEach(() => {
     delete window.labelingEasier;
     localStorage.clear();
+    vi.useRealTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('starts empty without demo frames or new/python controls', () => {
@@ -274,6 +280,8 @@ describe('Labeling Easier editor shell', () => {
     expect(screen.getByRole('button', { name: '常规' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '外观' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '键盘快捷键' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'AI 标注' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '命名' })).toBeInTheDocument();
   });
 
   it('customizes shortcuts, blocks conflicts, and resets defaults', async () => {
@@ -313,19 +321,26 @@ describe('Labeling Easier editor shell', () => {
     expect(localStorage.getItem('labeling-easier.shortcuts')).toContain('"draw":"F"');
   });
 
-  it('stores dark mode and auto-review settings from the multi-level settings dialog', () => {
+  it('stores general, appearance, and system theme settings from the fixed settings dialog', () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toHaveClass('settings-dialog');
     fireEvent.click(screen.getByRole('button', { name: 'Appearance' }));
     fireEvent.click(screen.getByRole('switch', { name: 'Dark mode' }));
 
-    expect(localStorage.getItem('labeling-easier.theme')).toBe('dark');
+    expect(localStorage.getItem('labeling-easier.themeMode')).toBe('dark');
     expect(document.documentElement.dataset.theme).toBe('dark');
+    fireEvent.click(screen.getByRole('switch', { name: 'Follow system theme' }));
+    expect(localStorage.getItem('labeling-easier.themeMode')).toBe('system');
 
     fireEvent.click(screen.getByRole('button', { name: 'General' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Auto-save labels and project state' }));
+    expect(localStorage.getItem('labeling-easier.autoSave')).toBe('false');
     fireEvent.click(screen.getByRole('switch', { name: 'Auto-mark reviewed after manual edits' }));
     expect(localStorage.getItem('labeling-easier.autoReviewManualEdits')).toBe('true');
+    fireEvent.click(screen.getByRole('switch', { name: 'Auto-mark reviewed after viewing a frame' }));
+    expect(localStorage.getItem('labeling-easier.autoReviewSeenFrames')).toBe('true');
   });
 
   it('shows opened images as real image elements', async () => {
@@ -553,9 +568,10 @@ describe('Labeling Easier editor shell', () => {
     expect(screen.getByTestId('image-surface')).toHaveStyle({ transform: 'translate(50px, 35px) scale(1)' });
   });
 
-  it('runs AI on the active media, writes detections, and shows progress', async () => {
+  it('runs AI on the active media with confidence settings, writes detections, and shows progress', async () => {
     let aiListener: ((event: AiWorkerEvent) => void) | undefined;
     const runAi = vi.fn().mockResolvedValue({ started: true });
+    localStorage.setItem('labeling-easier.aiConfidenceThreshold', '0.66');
     window.labelingEasier = {
       openFolder: vi.fn().mockResolvedValue({ ...projectFixture(), media: [videoMedia, secondVideoMedia] }),
       runAi,
@@ -576,7 +592,7 @@ describe('Labeling Easier editor shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run AI labels' }));
 
     expect(runAi).toHaveBeenCalledWith(
-      expect.objectContaining({ modelPath: 'C:/app/resources/models/yolov8n.pt' }),
+      expect.objectContaining({ modelPath: 'C:/app/resources/models/yolov8n.pt', confidenceThreshold: 0.66 }),
       videoMedia.frames.map((frame) => ({ frameId: frame.id, imagePath: frame.imagePath, mediaId: videoMedia.id, index: frame.index }))
     );
     expect(screen.getAllByText('AI labeling 0/2').length).toBeGreaterThan(0);
@@ -642,11 +658,31 @@ describe('Labeling Easier editor shell', () => {
     expect(screen.getByTestId('review-state')).toHaveTextContent('reviewed');
   });
 
-  it('selects bundled, local, and downloaded AI models from the model panel', async () => {
+  it('auto-marks viewed frames as reviewed when the setting is enabled', async () => {
+    localStorage.setItem('labeling-easier.autoReviewSeenFrames', 'true');
+    const unreviewedMedia: MediaItem = {
+      ...videoMedia,
+      frames: [{ ...videoMedia.frames[0], reviewState: 'unreviewed_ai' }, videoMedia.frames[1]]
+    };
+    window.labelingEasier = {
+      openFolder: vi.fn().mockResolvedValue({ ...projectFixture(), media: [unreviewedMedia] }),
+      mediaUrl: vi.fn((filePath: string) => `labeling-easier-media://file/${encodeURIComponent(filePath)}`),
+      onMediaImportEvent: vi.fn(() => () => {}),
+      onAiEvent: vi.fn(() => () => {})
+    } as unknown as Window['labelingEasier'];
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Folder' }));
+    expect(await screen.findByTestId('review-state')).toHaveTextContent('unreviewed_ai');
+
+    await waitFor(() => expect(screen.getByTestId('review-state')).toHaveTextContent('reviewed'), { timeout: 1500 });
+  });
+
+  it('persists local model selection and removes the right-panel advanced download control', async () => {
     window.labelingEasier = {
       bundledModelPath: vi.fn().mockResolvedValue('C:/app/resources/models/yolov8n.pt'),
       chooseModelFile: vi.fn().mockResolvedValue('C:/models/custom.pt'),
-      downloadModel: vi.fn().mockResolvedValue('C:/Users/CZX/AppData/Roaming/Labeling Easier/models/yolov8s.pt'),
       mediaUrl: vi.fn((filePath: string) => `labeling-easier-media://file/${encodeURIComponent(filePath)}`),
       onMediaImportEvent: vi.fn(() => () => {}),
       onAiEvent: vi.fn(() => () => {})
@@ -655,9 +691,148 @@ describe('Labeling Easier editor shell', () => {
     render(<App />);
 
     expect(await screen.findByText('yolov8n.pt')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Choose local model...' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Choose local model' }));
     expect(await screen.findByText('custom.pt')).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Download advanced model'), { target: { value: 'yolov8s' } });
-    expect(await screen.findByText('yolov8s.pt')).toBeInTheDocument();
+    expect(localStorage.getItem('labeling-easier.modelPath')).toBe('C:/models/custom.pt');
+    expect(screen.queryByLabelText('Download advanced model')).not.toBeInTheDocument();
+  });
+
+  it('restores the last session and still saves a session snapshot when autosave is disabled', async () => {
+    localStorage.setItem('labeling-easier.autoSave', 'false');
+    const autoSaveProject = vi.fn().mockResolvedValue({ saved: true });
+    const saveSessionState = vi.fn().mockResolvedValue({ saved: true });
+    window.labelingEasier = {
+      loadSessionState: vi.fn().mockResolvedValue({
+        project: { ...projectFixture('Restored Dataset'), media: [videoMedia] },
+        activeMediaId: videoMedia.id,
+        activeFrameId: videoMedia.frames[1].id,
+        selectedAnnotationId: '',
+        zoom: 2,
+        pan: { x: 11, y: 22 }
+      }),
+      saveSessionState,
+      autoSaveProject,
+      mediaUrl: vi.fn((filePath: string) => `labeling-easier-media://file/${encodeURIComponent(filePath)}`),
+      onMediaImportEvent: vi.fn(() => () => {}),
+      onAiEvent: vi.fn(() => () => {})
+    } as unknown as Window['labelingEasier'];
+
+    render(<App />);
+
+    expect(await screen.findByText('Opened Restored Dataset')).toBeInTheDocument();
+    expect(await screen.findByTestId('active-frame')).toHaveTextContent('Frame 2 / 2');
+    expect(screen.getByText('200%')).toBeInTheDocument();
+
+    await waitFor(() => expect(saveSessionState).toHaveBeenCalledWith(expect.objectContaining({ activeFrameId: 'frame-video-2' })));
+    expect(autoSaveProject).not.toHaveBeenCalled();
+  });
+
+  it('uses naming presets and custom templates for new boxes', async () => {
+    localStorage.setItem('labeling-easier.namingPreset', 'custom');
+    localStorage.setItem('labeling-easier.namingTemplate', '{prefix}{frame:000000}');
+    window.labelingEasier = {
+      openFolder: vi.fn().mockResolvedValue({ ...projectFixture(), media: [videoMedia] }),
+      mediaUrl: vi.fn((filePath: string) => `labeling-easier-media://file/${encodeURIComponent(filePath)}`),
+      onMediaImportEvent: vi.fn(() => () => {}),
+      onAiEvent: vi.fn(() => () => {})
+    } as unknown as Window['labelingEasier'];
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Folder' }));
+    await screen.findByAltText('frame-000001.jpg');
+    fireEvent.click(screen.getByRole('button', { name: 'Draw bbox (F)' }));
+    const overlay = screen.getByTestId('annotation-overlay');
+    vi.spyOn(overlay, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 100,
+      top: 0,
+      left: 0,
+      right: 100,
+      bottom: 100,
+      toJSON: () => {}
+    });
+
+    fireEvent.pointerDown(overlay, { clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(overlay, { clientX: 50, clientY: 50 });
+    fireEvent.pointerUp(overlay);
+
+    expect(await screen.findByDisplayValue('clip000001')).toBeInTheDocument();
+  });
+
+  it('filters AI frames by saved label mode and asks when no mode is configured', async () => {
+    localStorage.setItem('labeling-easier.aiLabelMode', 'emptyOnly');
+    const runAi = vi.fn().mockResolvedValue({ started: true });
+    window.labelingEasier = {
+      openFolder: vi.fn().mockResolvedValue({ ...projectFixture(), media: [annotatedVideoMedia] }),
+      runAi,
+      bundledModelPath: vi.fn().mockResolvedValue('C:/app/resources/models/yolov8n.pt'),
+      mediaUrl: vi.fn((filePath: string) => `labeling-easier-media://file/${encodeURIComponent(filePath)}`),
+      onMediaImportEvent: vi.fn(() => () => {}),
+      onAiEvent: vi.fn(() => () => {})
+    } as unknown as Window['labelingEasier'];
+
+    render(<App />);
+
+    await screen.findByText('yolov8n.pt');
+    fireEvent.click(screen.getByRole('button', { name: 'Open Folder' }));
+    await screen.findByText('clip.mp4');
+    fireEvent.click(screen.getByRole('button', { name: 'Run AI labels' }));
+
+    expect(runAi).toHaveBeenCalledWith(
+      expect.anything(),
+      [videoMedia.frames[1]].map((frame) => ({ frameId: frame.id, imagePath: frame.imagePath, mediaId: videoMedia.id, index: frame.index }))
+    );
+  });
+
+  it('asks for an AI write strategy on labeled media and can remember the choice', async () => {
+    const runAi = vi.fn().mockResolvedValue({ started: true });
+    window.labelingEasier = {
+      openFolder: vi.fn().mockResolvedValue({ ...projectFixture(), media: [annotatedVideoMedia] }),
+      runAi,
+      bundledModelPath: vi.fn().mockResolvedValue('C:/app/resources/models/yolov8n.pt'),
+      mediaUrl: vi.fn((filePath: string) => `labeling-easier-media://file/${encodeURIComponent(filePath)}`),
+      onMediaImportEvent: vi.fn(() => () => {}),
+      onAiEvent: vi.fn(() => () => {})
+    } as unknown as Window['labelingEasier'];
+
+    render(<App />);
+
+    await screen.findByText('yolov8n.pt');
+    fireEvent.click(screen.getByRole('button', { name: 'Open Folder' }));
+    await screen.findByText('clip.mp4');
+    fireEvent.click(screen.getByRole('button', { name: 'Run AI labels' }));
+
+    expect(screen.getByRole('dialog', { name: 'AI labeling mode' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('switch', { name: 'Remember this choice' }));
+    fireEvent.click(screen.getByRole('button', { name: /Only unlabeled frames/ }));
+
+    expect(localStorage.getItem('labeling-easier.aiLabelMode')).toBe('emptyOnly');
+    expect(runAi).toHaveBeenCalledWith(
+      expect.anything(),
+      [videoMedia.frames[1]].map((frame) => ({ frameId: frame.id, imagePath: frame.imagePath, mediaId: videoMedia.id, index: frame.index }))
+    );
+  });
+
+  it('exports labels through the desktop export writer instead of only previewing counts', async () => {
+    const exportToDirectory = vi.fn().mockResolvedValue({ saved: true, outputPath: 'C:/exports', fileCount: 2, format: 'yolo' });
+    window.labelingEasier = {
+      openFolder: vi.fn().mockResolvedValue({ ...projectFixture(), media: [annotatedVideoMedia] }),
+      exportToDirectory,
+      mediaUrl: vi.fn((filePath: string) => `labeling-easier-media://file/${encodeURIComponent(filePath)}`),
+      onMediaImportEvent: vi.fn(() => () => {}),
+      onAiEvent: vi.fn(() => () => {})
+    } as unknown as Window['labelingEasier'];
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Folder' }));
+    await screen.findByText('clip.mp4');
+    fireEvent.click(screen.getByRole('button', { name: 'Export labels' }));
+
+    expect(exportToDirectory).toHaveBeenCalledWith(expect.objectContaining({ media: [annotatedVideoMedia] }), 'yolo');
+    expect(await screen.findByText(/Exported 2 YOLO txt file/)).toBeInTheDocument();
   });
 });

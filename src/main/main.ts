@@ -1,5 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, protocol, type WebContents } from 'electron';
-import { mkdir } from 'node:fs/promises';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, protocol, shell, type WebContents } from 'electron';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildAiWorkerArgs, AiWorkerSession, type AiWorkerEvent } from './services/aiWorker';
@@ -19,6 +19,7 @@ import {
   readFrameCache
 } from './services/mediaService';
 import { bundledModelPath, downloadAdvancedModel, type AdvancedModelName } from './services/modelService';
+import { writeExportFiles } from './services/exportWriter';
 import { createEmptyProject, loadOrCreateProjectInDirectory, mergeProjectMedia, PROJECT_FILE_NAME, saveProjectToDirectory } from './services/projectStore';
 import {
   exportCoco,
@@ -39,7 +40,7 @@ import {
   updateAnnotation,
   type AddAnnotationInput
 } from '../shared/projectOps';
-import type { Annotation, CocoDataset, LabelFormat, LabelMeFile, MediaItem, Project } from '../shared/types';
+import type { Annotation, CocoDataset, ExportWriteResult, LabelFormat, LabelMeFile, MediaItem, Project, SessionState } from '../shared/types';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | undefined;
@@ -139,6 +140,22 @@ function registerIpc(): void {
     currentProject = project;
     await saveProjectToDirectory(project, currentProjectDirectory);
     return { saved: true, path: path.join(currentProjectDirectory, PROJECT_FILE_NAME) };
+  });
+
+  ipcMain.handle('session.load', async () => loadSessionState());
+
+  ipcMain.handle('session.save', async (_event, state: SessionState) => {
+    const nextState = {
+      ...state,
+      projectDirectory: state.projectDirectory ?? currentProjectDirectory
+    };
+    if (nextState.project) currentProject = nextState.project;
+    if (nextState.projectDirectory) {
+      currentProjectDirectory = nextState.projectDirectory;
+      currentProjectPath = path.join(nextState.projectDirectory, PROJECT_FILE_NAME);
+    }
+    await saveSessionState(nextState);
+    return { saved: true, path: sessionStatePath() };
   });
 
   ipcMain.handle('media.importImages', async () => {
@@ -296,8 +313,29 @@ function registerIpc(): void {
   });
   ipcMain.handle('model.download', async (_event, model: AdvancedModelName) => downloadAdvancedModel(model, app.getPath('userData')));
   ipcMain.handle('export.run', async (_event, project: Project, format: LabelFormat) => exportProject(project, format));
+  ipcMain.handle('export.toDirectory', async (_event, project: Project, format: LabelFormat): Promise<ExportWriteResult> => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory', 'createDirectory'],
+      title: 'Choose export folder'
+    });
+    const outputDirectory = result.filePaths[0];
+    if (result.canceled || !outputDirectory) return { saved: false };
+    return writeExportFiles(project, format, outputDirectory);
+  });
   ipcMain.handle('convert.run', async (_event, project: Project, format: LabelFormat) => exportProject(project, format));
   ipcMain.handle('import.run', async (_event, format: LabelFormat, payload: unknown) => importProject(format, payload));
+  ipcMain.handle('shell.openExternal', async (_event, url: string) => {
+    await shell.openExternal(url);
+    return { opened: true };
+  });
+  ipcMain.handle('file.exists', async (_event, filePath: string) => {
+    try {
+      await access(filePath);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 async function createMediaForPaths(
@@ -374,6 +412,30 @@ function withDefaultModel(project: Project): Project {
       modelPath: bundledModelPath(modelResourceRoot())
     }
   };
+}
+
+function sessionStatePath(): string {
+  return path.join(app.getPath('userData'), 'session-state.json');
+}
+
+async function loadSessionState(): Promise<SessionState | undefined> {
+  try {
+    const state = JSON.parse(await readFile(sessionStatePath(), 'utf8')) as SessionState;
+    if (state.project) currentProject = state.project;
+    if (state.projectDirectory) {
+      currentProjectDirectory = state.projectDirectory;
+      currentProjectPath = path.join(state.projectDirectory, PROJECT_FILE_NAME);
+    }
+    return state;
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveSessionState(state: SessionState): Promise<void> {
+  const filePath = sessionStatePath();
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
 }
 
 function modelResourceRoot(): string {

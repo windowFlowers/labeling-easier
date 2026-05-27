@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  ExternalLink,
   File,
   FolderOpen,
   Keyboard,
@@ -18,10 +19,9 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent, WheelEvent } from 'react';
 import type { AiDetection, AiWorkerEvent } from '../main/services/aiWorker';
-import { exportCoco, exportLabelMe, exportVoc, exportYolo } from '../shared/converters';
 import { nowIso, stableId } from '../shared/ids';
 import { markFrameReviewed } from '../shared/review';
-import type { Annotation, Bbox, FrameRecord, LabelClass, LabelFormat, MediaItem, Project } from '../shared/types';
+import type { AiLabelMode, Annotation, Bbox, FrameRecord, LabelClass, LabelFormat, MediaItem, NamingPreset, Project, ThemeMode } from '../shared/types';
 import type { MediaImportEvent } from '../preload/preload';
 
 type ToolMode = 'select' | 'draw';
@@ -40,7 +40,7 @@ type HistoryEntry = {
 };
 type Language = 'en' | 'zh';
 type Theme = 'light' | 'dark';
-type SettingsTab = 'general' | 'appearance' | 'shortcuts';
+type SettingsTab = 'general' | 'appearance' | 'shortcuts' | 'ai' | 'naming';
 type ShortcutAction =
   | 'draw'
   | 'previousFrame'
@@ -67,7 +67,16 @@ const ZOOM_MAX = 8;
 const LANGUAGE_STORAGE_KEY = 'labeling-easier.language';
 const SHORTCUT_STORAGE_KEY = 'labeling-easier.shortcuts';
 const THEME_STORAGE_KEY = 'labeling-easier.theme';
+const THEME_MODE_STORAGE_KEY = 'labeling-easier.themeMode';
 const AUTO_REVIEW_STORAGE_KEY = 'labeling-easier.autoReviewManualEdits';
+const MODEL_PATH_STORAGE_KEY = 'labeling-easier.modelPath';
+const AUTO_SAVE_STORAGE_KEY = 'labeling-easier.autoSave';
+const AUTO_REVIEW_SEEN_STORAGE_KEY = 'labeling-easier.autoReviewSeenFrames';
+const NAMING_PRESET_STORAGE_KEY = 'labeling-easier.namingPreset';
+const NAMING_TEMPLATE_STORAGE_KEY = 'labeling-easier.namingTemplate';
+const AI_LABEL_MODE_STORAGE_KEY = 'labeling-easier.aiLabelMode';
+const AI_CONFIDENCE_STORAGE_KEY = 'labeling-easier.aiConfidenceThreshold';
+const DEFAULT_NAMING_TEMPLATE = '{prefix}_{frame:000000}_{box:00}';
 const DEFAULT_SHORTCUTS: ShortcutMap = {
   draw: 'F',
   previousFrame: 'A',
@@ -92,6 +101,36 @@ const SHORTCUT_ACTIONS: ShortcutAction[] = [
 ];
 const CORNER_HANDLES: ResizeHandle[] = ['tl', 'tr', 'br', 'bl'];
 const EDGE_HANDLES: ResizeHandle[] = ['t', 'r', 'b', 'l'];
+const NAMING_PRESETS: Array<{ id: NamingPreset; template: string; example: string }> = [
+  { id: 'current', template: DEFAULT_NAMING_TEMPLATE, example: 'clip_000001_01' },
+  { id: 'compact', template: '{prefix}{frame}{box}', example: 'clip11' },
+  { id: 'shortFrame', template: '{prefix}_{frame}_{box}', example: 'clip_1_1' },
+  { id: 'singleTarget', template: '{prefix}_{frame:000000}', example: 'clip_000001' },
+  { id: 'frameOnly', template: '{frame:000000}', example: '000001' },
+  { id: 'custom', template: DEFAULT_NAMING_TEMPLATE, example: 'custom' }
+];
+const AI_MODEL_LINKS = [
+  {
+    name: 'YOLOv8 official docs',
+    url: 'https://github.com/ultralytics/ultralytics/blob/main/docs/en/models/yolov8.md'
+  },
+  {
+    name: 'YOLO11 official docs',
+    url: 'https://github.com/ultralytics/ultralytics/blob/main/docs/en/models/yolo11.md'
+  },
+  {
+    name: 'YOLOv8n.pt',
+    url: 'https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt'
+  },
+  {
+    name: 'YOLOv8s.pt',
+    url: 'https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8s.pt'
+  },
+  {
+    name: 'YOLO11n.pt',
+    url: 'https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt'
+  }
+];
 
 const TEXT = {
   en: {
@@ -102,13 +141,21 @@ const TEXT = {
     settingsGeneral: 'General',
     settingsAppearance: 'Appearance',
     settingsKeyboardShortcuts: 'Keyboard shortcuts',
+    settingsAi: 'AI labeling',
+    settingsNaming: 'Naming',
     language: 'Language',
     shortcuts: 'Shortcuts',
     resetShortcuts: 'Reset shortcuts',
+    autoSave: 'Auto-save labels and project state',
+    autoSaveHelp: 'Writes labels to the project folder when available and always keeps a local session snapshot.',
     autoReviewManualEdits: 'Auto-mark reviewed after manual edits',
     autoReviewManualEditsHelp: 'Drawing, moving, resizing, deleting, copying, and editing boxes will mark the current frame reviewed.',
+    autoReviewSeenFrames: 'Auto-mark reviewed after viewing a frame',
+    autoReviewSeenFramesHelp: 'Frames become reviewed after they stay visible briefly.',
     darkMode: 'Dark mode',
     darkModeHelp: 'Use a darker interface while keeping media colors unchanged.',
+    followSystemTheme: 'Follow system theme',
+    followSystemThemeHelp: 'Use the operating system light or dark preference.',
     editShortcut: 'Edit {label} shortcut',
     pressShortcut: 'Press shortcut...',
     shortcutConflict: '{shortcut} is already used by {label}.',
@@ -140,12 +187,15 @@ const TEXT = {
     currentModel: 'Current model',
     noModelSelected: 'No model selected',
     useBundledModel: 'Use bundled YOLOv8n',
-    chooseLocalModel: 'Choose local model...',
+    chooseLocalModel: 'Choose local model',
     downloadAdvancedModel: 'Download advanced model',
     selectModel: 'Select model',
     runAiLabels: 'Run AI labels',
     export: 'Export',
-    prepareExport: 'Prepare export',
+    exportLabels: 'Export labels',
+    exportComplete: 'Exported {count} {format} file(s) to {path}.',
+    exportCancelled: 'Export cancelled.',
+    exportFailed: 'Export failed: {message}',
     ready: 'Ready',
     nothingToUndo: 'Nothing to undo',
     undidLastEdit: 'Undid last edit',
@@ -157,8 +207,27 @@ const TEXT = {
     noFramesAi: 'No frames in active media for AI labeling.',
     aiLabeling: 'AI labeling {completed}/{total}',
     aiComplete: 'AI labeling complete. Review queue updated.',
-    exportPrepared: 'Prepared {count} {format} file(s).',
-    exportedObject: 'Prepared {format} export object.',
+    aiModePromptTitle: 'AI labeling mode',
+    aiModePromptHelp: 'This media already has labels. Choose how AI results should be applied.',
+    rememberAiMode: 'Remember this choice',
+    aiModeAsk: 'Ask every time',
+    aiModeOverwrite: 'Overwrite current media labels',
+    aiModeEmptyOnly: 'Only unlabeled frames',
+    aiModeUnreviewedOnly: 'Only unreviewed frames',
+    aiModeOverwriteHelp: 'Clears labels on processed frames before writing AI detections.',
+    aiModeEmptyOnlyHelp: 'Skips frames that already have any label.',
+    aiModeUnreviewedOnlyHelp: 'Runs only on frames whose review state is not reviewed.',
+    aiConfidence: 'Model confidence',
+    aiModelLinks: 'Official model links',
+    openLink: 'Open {name}',
+    namingPreset: 'Naming style',
+    namingTemplate: 'Custom template',
+    namingCurrent: 'Current',
+    namingCompact: 'No underscores',
+    namingShortFrame: 'Short frame number',
+    namingSingleTarget: 'Single target',
+    namingFrameOnly: 'Frame only',
+    namingCustom: 'Custom template',
     copiedBoxes: 'Copied {count} box(es) from previous frame.',
     noPreviousBoxes: 'No previous frame boxes to copy.',
     importingMedia: 'Importing media',
@@ -189,13 +258,21 @@ const TEXT = {
     settingsGeneral: '常规',
     settingsAppearance: '外观',
     settingsKeyboardShortcuts: '键盘快捷键',
+    settingsAi: 'AI 标注',
+    settingsNaming: '命名',
     language: '语言',
     shortcuts: '快捷键',
     resetShortcuts: '重置快捷键',
+    autoSave: '自动保存标签和工作状态',
+    autoSaveHelp: '有项目文件夹时写回项目文件，同时始终保留本机会话快照。',
     autoReviewManualEdits: '手动操作后自动标记为已审核',
     autoReviewManualEditsHelp: '画框、移动、拉伸、删除、复制和编辑框后，当前帧会自动变为已复核。',
+    autoReviewSeenFrames: '看过帧后自动标记为已审核',
+    autoReviewSeenFramesHelp: '当前帧停留可见一小段时间后自动变为已复核。',
     darkMode: '暗色模式',
     darkModeHelp: '切换为深色界面，图片和视频本身不变。',
+    followSystemTheme: '跟随系统暗色模式',
+    followSystemThemeHelp: '使用操作系统当前的亮色或暗色偏好。',
     editShortcut: '编辑{label}快捷键',
     pressShortcut: '按下快捷键...',
     shortcutConflict: '{shortcut} 已被 {label} 使用。',
@@ -227,12 +304,15 @@ const TEXT = {
     currentModel: '当前模型',
     noModelSelected: '未选择模型',
     useBundledModel: '使用内置 YOLOv8n',
-    chooseLocalModel: '选择本机模型...',
+    chooseLocalModel: '选择本机模型',
     downloadAdvancedModel: '下载高级模型',
     selectModel: '选择模型',
     runAiLabels: '运行 AI 标注',
     export: '导出',
-    prepareExport: '准备导出',
+    exportLabels: '导出标签',
+    exportComplete: '已导出 {count} 个 {format} 文件到 {path}。',
+    exportCancelled: '已取消导出。',
+    exportFailed: '导出失败：{message}',
     ready: '就绪',
     nothingToUndo: '没有可撤回操作',
     undidLastEdit: '已撤回上一步编辑',
@@ -244,8 +324,27 @@ const TEXT = {
     noFramesAi: '当前媒体没有可用于 AI 标注的帧。',
     aiLabeling: 'AI 标注 {completed}/{total}',
     aiComplete: 'AI 标注完成，请复核结果。',
-    exportPrepared: '已准备 {count} 个 {format} 文件。',
-    exportedObject: '已准备 {format} 导出对象。',
+    aiModePromptTitle: 'AI 标注策略',
+    aiModePromptHelp: '当前媒体已有标注，请选择 AI 结果如何写入。',
+    rememberAiMode: '记住这个选择',
+    aiModeAsk: '每次询问',
+    aiModeOverwrite: '覆盖当前媒体所有标注',
+    aiModeEmptyOnly: '只处理无标注帧',
+    aiModeUnreviewedOnly: '只处理未审核帧',
+    aiModeOverwriteHelp: '处理帧会先清空已有框，再写入 AI 检测结果。',
+    aiModeEmptyOnlyHelp: '跳过已经有任何标注的帧。',
+    aiModeUnreviewedOnlyHelp: '只处理复核状态不是已审核的帧。',
+    aiConfidence: '模型置信度',
+    aiModelLinks: '官方模型链接',
+    openLink: '打开 {name}',
+    namingPreset: '命名样式',
+    namingTemplate: '自定义模板',
+    namingCurrent: '当前规则',
+    namingCompact: '无下划线',
+    namingShortFrame: '短帧号',
+    namingSingleTarget: '单目标',
+    namingFrameOnly: '仅帧号',
+    namingCustom: '自定义模板',
     copiedBoxes: '已从上一帧复制 {count} 个框。',
     noPreviousBoxes: '上一帧没有可复制的框。',
     importingMedia: '正在导入媒体',
@@ -272,11 +371,18 @@ const TEXT = {
 type TextKey = keyof Omit<typeof TEXT.en, 'shortcutLabels'>;
 
 export default function App() {
-  const [project, setProject] = useState<Project>(() => createEmptyRendererProject());
+  const [project, setProject] = useState<Project>(() => applyLocalProjectPreferences(createEmptyRendererProject()));
   const [language, setLanguageState] = useState<Language>(() => loadLanguage());
   const [shortcuts, setShortcutsState] = useState<ShortcutMap>(() => loadShortcuts());
-  const [theme, setThemeState] = useState<Theme>(() => loadTheme());
+  const [themeMode, setThemeModeState] = useState<ThemeMode>(() => loadThemeMode());
+  const [systemTheme, setSystemTheme] = useState<Theme>(() => currentSystemTheme());
   const [autoReviewManualEdits, setAutoReviewManualEditsState] = useState(() => loadAutoReviewManualEdits());
+  const [autoSave, setAutoSaveState] = useState(() => loadBooleanPreference(AUTO_SAVE_STORAGE_KEY, true));
+  const [autoReviewSeenFrames, setAutoReviewSeenFramesState] = useState(() => loadBooleanPreference(AUTO_REVIEW_SEEN_STORAGE_KEY, false));
+  const [namingPreset, setNamingPresetState] = useState<NamingPreset>(() => loadNamingPreset());
+  const [namingTemplate, setNamingTemplateState] = useState(() => localStorage.getItem(NAMING_TEMPLATE_STORAGE_KEY) || DEFAULT_NAMING_TEMPLATE);
+  const [aiLabelMode, setAiLabelModeState] = useState<AiLabelMode>(() => loadAiLabelMode());
+  const [aiConfidenceThreshold, setAiConfidenceThresholdState] = useState(() => loadAiConfidenceThreshold());
   const [activeMediaId, setActiveMediaId] = useState('');
   const [activeFrameId, setActiveFrameId] = useState('');
   const [selectedAnnotationId, setSelectedAnnotationId] = useState('');
@@ -290,6 +396,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [recordingShortcut, setRecordingShortcut] = useState<ShortcutAction | undefined>();
   const [shortcutError, setShortcutError] = useState('');
+  const [sessionHydrated, setSessionHydrated] = useState(() => !window.labelingEasier?.loadSessionState);
+  const [aiModePrompt, setAiModePrompt] = useState<{ open: boolean; remember: boolean }>({ open: false, remember: false });
   const [aiProgress, setAiProgress] = useState<{ running: boolean; completed: number; total: number; error?: string }>({
     running: false,
     completed: 0,
@@ -297,6 +405,7 @@ export default function App() {
   });
   const activeFrameIdRef = useRef(activeFrameId);
   const filmstripRef = useRef<HTMLDivElement>(null);
+  const aiRunModeRef = useRef<AiLabelMode>('emptyOnly');
   const t = useCallback((key: TextKey, params?: Record<string, string | number>) => translate(language, key, params), [language]);
   const shortcutLabel = useCallback((action: ShortcutAction) => TEXT[language].shortcutLabels[action], [language]);
 
@@ -307,14 +416,24 @@ export default function App() {
   const activeFrame = activeFrameIndex >= 0 ? frames[activeFrameIndex] : frames[0];
   const selectedAnnotation = activeFrame?.annotations.find((annotation) => annotation.id === selectedAnnotationId);
   const reviewQueue = allFrames.filter((frame) => frame.reviewState === 'unreviewed_ai' || frame.reviewState === 'modified');
+  const effectiveTheme: Theme = themeMode === 'system' ? systemTheme : themeMode;
 
   useEffect(() => {
     activeFrameIdRef.current = activeFrameId;
   }, [activeFrameId]);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
+    document.documentElement.dataset.theme = effectiveTheme;
+  }, [effectiveTheme]);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
+    if (!mediaQuery) return;
+    const updateSystemTheme = () => setSystemTheme(mediaQuery.matches ? 'dark' : 'light');
+    updateSystemTheme();
+    mediaQuery.addEventListener?.('change', updateSystemTheme);
+    return () => mediaQuery.removeEventListener?.('change', updateSystemTheme);
+  }, []);
 
   useEffect(() => {
     const container = filmstripRef.current;
@@ -346,14 +465,50 @@ export default function App() {
     localStorage.setItem(SHORTCUT_STORAGE_KEY, JSON.stringify(nextShortcuts));
   }
 
-  function setTheme(nextTheme: Theme) {
-    setThemeState(nextTheme);
-    localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+  function setThemeMode(nextThemeMode: ThemeMode) {
+    setThemeModeState(nextThemeMode);
+    localStorage.setItem(THEME_MODE_STORAGE_KEY, nextThemeMode);
+    localStorage.setItem(THEME_STORAGE_KEY, nextThemeMode === 'system' ? currentSystemTheme() : nextThemeMode);
   }
 
   function setAutoReviewManualEdits(nextValue: boolean) {
     setAutoReviewManualEditsState(nextValue);
     localStorage.setItem(AUTO_REVIEW_STORAGE_KEY, String(nextValue));
+  }
+
+  function setAutoSave(nextValue: boolean) {
+    setAutoSaveState(nextValue);
+    localStorage.setItem(AUTO_SAVE_STORAGE_KEY, String(nextValue));
+  }
+
+  function setAutoReviewSeenFrames(nextValue: boolean) {
+    setAutoReviewSeenFramesState(nextValue);
+    localStorage.setItem(AUTO_REVIEW_SEEN_STORAGE_KEY, String(nextValue));
+  }
+
+  function setNamingPreset(nextValue: NamingPreset) {
+    setNamingPresetState(nextValue);
+    localStorage.setItem(NAMING_PRESET_STORAGE_KEY, nextValue);
+    setProjectState((current) => ({ ...current, settings: { ...current.settings, namingPreset: nextValue }, updatedAt: nowIso() }));
+  }
+
+  function setNamingTemplate(nextValue: string) {
+    setNamingTemplateState(nextValue);
+    localStorage.setItem(NAMING_TEMPLATE_STORAGE_KEY, nextValue);
+    setProjectState((current) => ({ ...current, settings: { ...current.settings, namingTemplate: nextValue }, updatedAt: nowIso() }));
+  }
+
+  function setAiLabelMode(nextValue: AiLabelMode) {
+    setAiLabelModeState(nextValue);
+    localStorage.setItem(AI_LABEL_MODE_STORAGE_KEY, nextValue);
+    setProjectState((current) => ({ ...current, settings: { ...current.settings, aiLabelMode: nextValue }, updatedAt: nowIso() }));
+  }
+
+  function setAiConfidenceThreshold(nextValue: number) {
+    const normalized = Math.round(clamp(nextValue, 0.01, 0.99) * 100) / 100;
+    setAiConfidenceThresholdState(normalized);
+    localStorage.setItem(AI_CONFIDENCE_STORAGE_KEY, String(normalized));
+    setProjectState((current) => ({ ...current, settings: { ...current.settings, confidenceThreshold: normalized }, updatedAt: nowIso() }));
   }
 
   function setProjectState(updater: (current: Project) => Project) {
@@ -396,7 +551,36 @@ export default function App() {
 
   useEffect(() => {
     const api = window.labelingEasier;
-    if (!api?.bundledModelPath) return;
+    if (!api?.loadSessionState) {
+      setSessionHydrated(true);
+      return;
+    }
+    let cancelled = false;
+    void api.loadSessionState().then((state) => {
+      if (cancelled) return;
+      if (state?.project) {
+        const restoredProject = applyLocalProjectPreferences(state.project);
+        setProject(restoredProject);
+        const restoredMedia = restoredProject.media.find((media) => media.id === state.activeMediaId) ?? restoredProject.media[0];
+        const restoredFrame = restoredMedia?.frames.find((frame) => frame.id === state.activeFrameId) ?? restoredMedia?.frames[0];
+        setActiveMediaId(restoredMedia?.id ?? '');
+        setActiveFrameId(restoredFrame?.id ?? '');
+        setSelectedAnnotationId(state.selectedAnnotationId ?? restoredFrame?.annotations[0]?.id ?? '');
+        setZoom(state.zoom ?? 1);
+        setPan(state.pan ?? { x: 0, y: 0 });
+        setStatus(translate(loadLanguage(), 'opened', { name: restoredProject.name }));
+      }
+      setSessionHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const api = window.labelingEasier;
+    if (!sessionHydrated || !api?.bundledModelPath) return;
+    if (project.settings.modelPath || localStorage.getItem(MODEL_PATH_STORAGE_KEY)) return;
     let cancelled = false;
     void api.bundledModelPath().then((modelPath) => {
       if (cancelled) return;
@@ -407,13 +591,18 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [sessionHydrated, project.settings.modelPath]);
 
   useEffect(() => {
     const api = window.labelingEasier;
-    if (!api?.autoSaveProject) return;
-    void api.autoSaveProject(project);
-  }, [project]);
+    if (!sessionHydrated) return;
+    if (autoSave && api?.autoSaveProject) {
+      void api.autoSaveProject(project);
+    }
+    if (api?.saveSessionState) {
+      void api.saveSessionState({ project, activeMediaId, activeFrameId, selectedAnnotationId, zoom, pan });
+    }
+  }, [project, activeMediaId, activeFrameId, selectedAnnotationId, zoom, pan, autoSave, sessionHydrated]);
 
   useEffect(() => {
     return window.labelingEasier?.onMediaImportEvent?.((event) => {
@@ -426,6 +615,14 @@ export default function App() {
       handleAiEvent(event);
     });
   }, []);
+
+  useEffect(() => {
+    if (!autoReviewSeenFrames || !activeFrame || activeFrame.reviewState === 'reviewed') return;
+    const timer = window.setTimeout(() => {
+      updateFrame(activeFrame.id, (frame) => markFrameReviewed(frame));
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [autoReviewSeenFrames, activeFrame?.id, activeFrame?.reviewState]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -493,7 +690,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeFrameIndex, activeMedia, activeFrame, frames, selectedAnnotation, setFrameByIndex, zoom, history, project, shortcuts, recordingShortcut, autoReviewManualEdits, t, shortcutLabel]);
+  }, [activeFrameIndex, activeMedia, activeFrame, frames, selectedAnnotation, setFrameByIndex, zoom, history, project, shortcuts, recordingShortcut, autoReviewManualEdits, namingPreset, namingTemplate, t, shortcutLabel]);
 
   function handleMediaImportEvent(event: MediaImportEvent) {
     if (event.type === 'progress') {
@@ -546,7 +743,13 @@ export default function App() {
     }
     if (event.type === 'result') {
       const firstAnnotationId = event.detections[0] ? aiAnnotationId(event.frameId, 0) : '';
-      setProjectState((current) => applyAiDetections(current, event.frameId, event.detections));
+      setProjectState((current) =>
+        applyAiDetections(current, event.frameId, event.detections, {
+          replaceExisting: aiRunModeRef.current === 'overwrite',
+          namingPreset,
+          namingTemplate
+        })
+      );
       if (firstAnnotationId && event.frameId === activeFrameIdRef.current) {
         setSelectedAnnotationId(firstAnnotationId);
       }
@@ -564,9 +767,10 @@ export default function App() {
   }
 
   function setActiveFromProject(nextProject: Project) {
-    const hydratedProject = nextProject.settings.modelPath || !project.settings.modelPath
-      ? nextProject
-      : { ...nextProject, settings: { ...nextProject.settings, modelPath: project.settings.modelPath } };
+    const localHydratedProject = applyLocalProjectPreferences(nextProject);
+    const hydratedProject = localHydratedProject.settings.modelPath || !project.settings.modelPath
+      ? localHydratedProject
+      : { ...localHydratedProject, settings: { ...localHydratedProject.settings, modelPath: project.settings.modelPath } };
     const firstMedia = hydratedProject.media[0];
     const firstFrame = firstMedia?.frames[0];
     setProject(hydratedProject);
@@ -645,7 +849,7 @@ export default function App() {
     pushUndoSnapshot();
     const annotation: Annotation = {
       id: `ann-${Date.now()}`,
-      name: nextAnnotationName(activeMedia, activeFrame),
+      name: nextAnnotationName(activeMedia, activeFrame, namingPreset, namingTemplate),
       frameId: activeFrame.id,
       classId: project.classes[0].id,
       bbox: clampBbox(bbox, activeMedia.width, activeMedia.height),
@@ -734,6 +938,7 @@ export default function App() {
     const api = desktopApi('Use bundled model');
     if (!api?.bundledModelPath) return;
     const modelPath = await api.bundledModelPath();
+    localStorage.setItem(MODEL_PATH_STORAGE_KEY, modelPath);
     setProjectState((current) => ({ ...current, settings: { ...current.settings, modelPath }, updatedAt: nowIso() }));
   }
 
@@ -742,18 +947,24 @@ export default function App() {
     if (!api?.chooseModelFile) return;
     const modelPath = await api.chooseModelFile();
     if (modelPath) {
+      localStorage.setItem(MODEL_PATH_STORAGE_KEY, modelPath);
       setProjectState((current) => ({ ...current, settings: { ...current.settings, modelPath }, updatedAt: nowIso() }));
     }
   }
 
-  async function downloadAdvancedModel(model: string) {
-    const api = desktopApi('Download model');
-    if (!api?.downloadModel || (model !== 'yolov8s' && model !== 'yolov8m')) return;
-    const modelPath = await api.downloadModel(model);
-    setProjectState((current) => ({ ...current, settings: { ...current.settings, modelPath }, updatedAt: nowIso() }));
+  async function runAi() {
+    if (!activeMedia || !frames.length) {
+      setStatus(t('noFramesAi'));
+      return;
+    }
+    if (activeMedia.frames.some((frame) => frame.annotations.length) && aiLabelMode === 'ask') {
+      setAiModePrompt({ open: true, remember: false });
+      return;
+    }
+    await startAiRun(aiLabelMode === 'ask' ? 'emptyOnly' : aiLabelMode);
   }
 
-  async function runAi() {
+  async function startAiRun(mode: Exclude<AiLabelMode, 'ask'>) {
     const api = desktopApi('Run AI labels');
     if (!api) return;
     if (!project.settings.modelPath) {
@@ -765,18 +976,43 @@ export default function App() {
       setStatus(t('noFramesAi'));
       return;
     }
+    const targetFrames = framesForAiMode(frames, mode);
+    if (!targetFrames.length) {
+      setStatus(t('noFramesAi'));
+      return;
+    }
     pushUndoSnapshot();
-    setAiProgress({ running: true, completed: 0, total: frames.length });
-    setStatus(t('aiLabeling', { completed: 0, total: frames.length }));
+    aiRunModeRef.current = mode;
+    if (mode === 'overwrite') {
+      const targetFrameIds = new Set(targetFrames.map((frame) => frame.id));
+      setProjectState((current) => clearAnnotationsForFrames(current, targetFrameIds));
+    }
+    const settings = {
+      ...project.settings,
+      confidenceThreshold: aiConfidenceThreshold,
+      aiLabelMode: mode,
+      namingPreset,
+      namingTemplate
+    };
+    setAiProgress({ running: true, completed: 0, total: targetFrames.length });
+    setStatus(t('aiLabeling', { completed: 0, total: targetFrames.length }));
     const result = await api.runAi(
-      project.settings,
-      frames.map((frame) => ({ frameId: frame.id, imagePath: frame.imagePath, mediaId: activeMedia.id, index: frame.index }))
+      settings,
+      targetFrames.map((frame) => ({ frameId: frame.id, imagePath: frame.imagePath, mediaId: activeMedia.id, index: frame.index }))
     );
     if (!result?.started) {
       const reason = result?.reason ?? 'AI worker unavailable in browser preview';
-      setAiProgress({ running: false, completed: 0, total: frames.length, error: reason });
+      setAiProgress({ running: false, completed: 0, total: targetFrames.length, error: reason });
       setStatus(reason);
     }
+  }
+
+  function confirmAiMode(mode: Exclude<AiLabelMode, 'ask'>) {
+    if (aiModePrompt.remember) {
+      setAiLabelMode(mode);
+    }
+    setAiModePrompt({ open: false, remember: false });
+    void startAiRun(mode);
   }
 
   function copyPreviousFrameBoxes() {
@@ -794,7 +1030,7 @@ export default function App() {
     const copies = previousFrame.annotations.map((annotation, index) => ({
       ...annotation,
       id: `ann-copy-${Date.now()}-${index}`,
-      name: annotationNameAt(activeMedia, activeFrame, activeFrame.annotations.length + index + 1),
+      name: annotationNameAt(activeMedia, activeFrame, activeFrame.annotations.length + index + 1, namingPreset, namingTemplate),
       frameId: activeFrame.id,
       bbox: { ...annotation.bbox },
       source: 'manual' as const,
@@ -806,14 +1042,20 @@ export default function App() {
     setStatus(t('copiedBoxes', { count: copies.length }));
   }
 
-  function runExportPreview() {
-    const countByFormat: Record<LabelFormat, number> = {
-      yolo: exportYolo(project).length,
-      coco: exportCoco(project).annotations.length,
-      voc: exportVoc(project).length,
-      labelme: exportLabelMe(project).length
-    };
-    setStatus(t('exportPrepared', { count: countByFormat[exportFormat], format: EXPORT_OPTIONS.find((option) => option.value === exportFormat)?.label ?? exportFormat }));
+  async function runExport() {
+    const api = desktopApi(t('export'));
+    if (!api?.exportToDirectory) return;
+    try {
+      const result = await api.exportToDirectory(project, exportFormat);
+      if (!result?.saved) {
+        setStatus(t('exportCancelled'));
+        return;
+      }
+      const formatLabel = EXPORT_OPTIONS.find((option) => option.value === exportFormat)?.label ?? exportFormat;
+      setStatus(t('exportComplete', { count: result.fileCount ?? 0, format: formatLabel, path: result.outputPath ?? '' }));
+    } catch (error) {
+      setStatus(t('exportFailed', { message: (error as Error).message }));
+    }
   }
 
   function removeMedia(mediaId: string) {
@@ -1029,14 +1271,6 @@ export default function App() {
             </div>
             <button onClick={chooseBundledModel}>{t('useBundledModel')}</button>
             <button onClick={chooseLocalModel}>{t('chooseLocalModel')}</button>
-            <label>
-              {t('downloadAdvancedModel')}
-              <select defaultValue="" onChange={(event) => void downloadAdvancedModel(event.target.value)}>
-                <option value="" disabled>{t('selectModel')}</option>
-                <option value="yolov8s">YOLOv8s</option>
-                <option value="yolov8m">YOLOv8m</option>
-              </select>
-            </label>
             {aiProgress.running || aiProgress.total ? (
               <div className="ai-progress" aria-label="AI labeling progress">
                 <progress value={aiProgress.completed} max={Math.max(1, aiProgress.total)} />
@@ -1057,25 +1291,48 @@ export default function App() {
                 ))}
               </select>
             </label>
-            <button onClick={runExportPreview}>
-              <Download size={16} /> {t('prepareExport')}
+            <button onClick={runExport}>
+              <Download size={16} /> {t('exportLabels')}
             </button>
           </div>
         </aside>
       </section>
+      {aiModePrompt.open ? (
+        <AiModeDialog
+          remember={aiModePrompt.remember}
+          t={t}
+          onRememberChange={(remember) => setAiModePrompt((current) => ({ ...current, remember }))}
+          onSelect={confirmAiMode}
+          onClose={() => setAiModePrompt({ open: false, remember: false })}
+        />
+      ) : null}
       {settingsOpen ? (
         <SettingsDialog
           language={language}
-          theme={theme}
+          themeMode={themeMode}
+          effectiveTheme={effectiveTheme}
+          autoSave={autoSave}
           autoReviewManualEdits={autoReviewManualEdits}
+          autoReviewSeenFrames={autoReviewSeenFrames}
           shortcuts={shortcuts}
+          namingPreset={namingPreset}
+          namingTemplate={namingTemplate}
+          aiLabelMode={aiLabelMode}
+          aiConfidenceThreshold={aiConfidenceThreshold}
           recordingShortcut={recordingShortcut}
           shortcutError={shortcutError}
           t={t}
           shortcutLabel={shortcutLabel}
           onLanguageChange={setLanguage}
-          onThemeChange={setTheme}
+          onThemeModeChange={setThemeMode}
+          onAutoSaveChange={setAutoSave}
           onAutoReviewManualEditsChange={setAutoReviewManualEdits}
+          onAutoReviewSeenFramesChange={setAutoReviewSeenFrames}
+          onNamingPresetChange={setNamingPreset}
+          onNamingTemplateChange={setNamingTemplate}
+          onAiLabelModeChange={setAiLabelMode}
+          onAiConfidenceThresholdChange={setAiConfidenceThreshold}
+          onOpenExternal={(url) => void window.labelingEasier?.openExternal?.(url)}
           onRecord={(action) => {
             setShortcutError('');
             setRecordingShortcut(action);
@@ -1107,31 +1364,59 @@ function PanelHeader({ title, detail }: { title: string; detail: string }) {
 
 function SettingsDialog({
   language,
-  theme,
+  themeMode,
+  effectiveTheme,
+  autoSave,
   autoReviewManualEdits,
+  autoReviewSeenFrames,
   shortcuts,
+  namingPreset,
+  namingTemplate,
+  aiLabelMode,
+  aiConfidenceThreshold,
   recordingShortcut,
   shortcutError,
   t,
   shortcutLabel,
   onLanguageChange,
-  onThemeChange,
+  onThemeModeChange,
+  onAutoSaveChange,
   onAutoReviewManualEditsChange,
+  onAutoReviewSeenFramesChange,
+  onNamingPresetChange,
+  onNamingTemplateChange,
+  onAiLabelModeChange,
+  onAiConfidenceThresholdChange,
+  onOpenExternal,
   onRecord,
   onReset,
   onClose
 }: {
   language: Language;
-  theme: Theme;
+  themeMode: ThemeMode;
+  effectiveTheme: Theme;
+  autoSave: boolean;
   autoReviewManualEdits: boolean;
+  autoReviewSeenFrames: boolean;
   shortcuts: ShortcutMap;
+  namingPreset: NamingPreset;
+  namingTemplate: string;
+  aiLabelMode: AiLabelMode;
+  aiConfidenceThreshold: number;
   recordingShortcut?: ShortcutAction;
   shortcutError: string;
   t: (key: TextKey, params?: Record<string, string | number>) => string;
   shortcutLabel: (action: ShortcutAction) => string;
   onLanguageChange: (language: Language) => void;
-  onThemeChange: (theme: Theme) => void;
+  onThemeModeChange: (theme: ThemeMode) => void;
+  onAutoSaveChange: (enabled: boolean) => void;
   onAutoReviewManualEditsChange: (enabled: boolean) => void;
+  onAutoReviewSeenFramesChange: (enabled: boolean) => void;
+  onNamingPresetChange: (preset: NamingPreset) => void;
+  onNamingTemplateChange: (template: string) => void;
+  onAiLabelModeChange: (mode: AiLabelMode) => void;
+  onAiConfidenceThresholdChange: (value: number) => void;
+  onOpenExternal: (url: string) => void;
   onRecord: (action: ShortcutAction) => void;
   onReset: () => void;
   onClose: () => void;
@@ -1140,7 +1425,9 @@ function SettingsDialog({
   const tabs: Array<{ id: SettingsTab; label: string }> = [
     { id: 'general', label: t('settingsGeneral') },
     { id: 'appearance', label: t('settingsAppearance') },
-    { id: 'shortcuts', label: t('settingsKeyboardShortcuts') }
+    { id: 'shortcuts', label: t('settingsKeyboardShortcuts') },
+    { id: 'ai', label: t('settingsAi') },
+    { id: 'naming', label: t('settingsNaming') }
   ];
 
   return (
@@ -1180,10 +1467,22 @@ function SettingsDialog({
                   </div>
                 </label>
                 <SettingSwitch
+                  label={t('autoSave')}
+                  description={t('autoSaveHelp')}
+                  checked={autoSave}
+                  onChange={onAutoSaveChange}
+                />
+                <SettingSwitch
                   label={t('autoReviewManualEdits')}
                   description={t('autoReviewManualEditsHelp')}
                   checked={autoReviewManualEdits}
                   onChange={onAutoReviewManualEditsChange}
+                />
+                <SettingSwitch
+                  label={t('autoReviewSeenFrames')}
+                  description={t('autoReviewSeenFramesHelp')}
+                  checked={autoReviewSeenFrames}
+                  onChange={onAutoReviewSeenFramesChange}
                 />
               </div>
             ) : null}
@@ -1191,10 +1490,16 @@ function SettingsDialog({
               <div className="settings-section">
                 <h3>{t('settingsAppearance')}</h3>
                 <SettingSwitch
+                  label={t('followSystemTheme')}
+                  description={t('followSystemThemeHelp')}
+                  checked={themeMode === 'system'}
+                  onChange={(checked) => onThemeModeChange(checked ? 'system' : effectiveTheme)}
+                />
+                <SettingSwitch
                   label={t('darkMode')}
                   description={t('darkModeHelp')}
-                  checked={theme === 'dark'}
-                  onChange={(checked) => onThemeChange(checked ? 'dark' : 'light')}
+                  checked={effectiveTheme === 'dark'}
+                  onChange={(checked) => onThemeModeChange(checked ? 'dark' : 'light')}
                 />
               </div>
             ) : null}
@@ -1228,9 +1533,146 @@ function SettingsDialog({
                 {shortcutError ? <p className="settings-error">{shortcutError}</p> : null}
               </div>
             ) : null}
+            {activeTab === 'ai' ? (
+              <div className="settings-section">
+                <h3>{t('settingsAi')}</h3>
+                <label>
+                  {t('aiConfidence')}
+                  <div className="range-row">
+                    <input
+                      type="range"
+                      min="0.01"
+                      max="0.99"
+                      step="0.01"
+                      value={aiConfidenceThreshold}
+                      onChange={(event) => onAiConfidenceThresholdChange(Number(event.target.value))}
+                    />
+                    <input
+                      aria-label={t('aiConfidence')}
+                      type="number"
+                      min="0.01"
+                      max="0.99"
+                      step="0.01"
+                      value={aiConfidenceThreshold}
+                      onChange={(event) => onAiConfidenceThresholdChange(Number(event.target.value))}
+                    />
+                  </div>
+                </label>
+                <ChoiceGrid
+                  value={aiLabelMode}
+                  options={[
+                    { id: 'ask', label: t('aiModeAsk'), description: t('aiModePromptHelp') },
+                    { id: 'overwrite', label: t('aiModeOverwrite'), description: t('aiModeOverwriteHelp') },
+                    { id: 'emptyOnly', label: t('aiModeEmptyOnly'), description: t('aiModeEmptyOnlyHelp') },
+                    { id: 'unreviewedOnly', label: t('aiModeUnreviewedOnly'), description: t('aiModeUnreviewedOnlyHelp') }
+                  ]}
+                  onChange={(value) => onAiLabelModeChange(value as AiLabelMode)}
+                />
+                <div className="link-list">
+                  <strong>{t('aiModelLinks')}</strong>
+                  {AI_MODEL_LINKS.map((link) => (
+                    <button key={link.url} onClick={() => onOpenExternal(link.url)} aria-label={t('openLink', { name: link.name })}>
+                      <ExternalLink size={14} /> {link.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {activeTab === 'naming' ? (
+              <div className="settings-section">
+                <h3>{t('settingsNaming')}</h3>
+                <ChoiceGrid
+                  value={namingPreset}
+                  options={NAMING_PRESETS.map((preset) => ({
+                    id: preset.id,
+                    label: namingPresetLabel(preset.id, t),
+                    description: preset.id === 'custom' ? namingTemplate : preset.example
+                  }))}
+                  onChange={(value) => onNamingPresetChange(value as NamingPreset)}
+                />
+                <label>
+                  {t('namingTemplate')}
+                  <input
+                    value={namingTemplate}
+                    onChange={(event) => onNamingTemplateChange(event.target.value)}
+                    disabled={namingPreset !== 'custom'}
+                  />
+                </label>
+              </div>
+            ) : null}
           </div>
         </div>
       </section>
+    </div>
+  );
+}
+
+function AiModeDialog({
+  remember,
+  t,
+  onRememberChange,
+  onSelect,
+  onClose
+}: {
+  remember: boolean;
+  t: (key: TextKey, params?: Record<string, string | number>) => string;
+  onRememberChange: (remember: boolean) => void;
+  onSelect: (mode: Exclude<AiLabelMode, 'ask'>) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="settings-backdrop">
+      <section className="settings-dialog ai-mode-dialog" role="dialog" aria-label={t('aiModePromptTitle')}>
+        <header className="settings-dialog-header">
+          <h2>{t('aiModePromptTitle')}</h2>
+          <button className="icon-button" aria-label={t('closeSettings')} onClick={onClose}>
+            <X size={16} />
+          </button>
+        </header>
+        <div className="settings-section">
+          <p className="settings-help">{t('aiModePromptHelp')}</p>
+          <ChoiceGrid
+            value=""
+            options={[
+              { id: 'overwrite', label: t('aiModeOverwrite'), description: t('aiModeOverwriteHelp') },
+              { id: 'emptyOnly', label: t('aiModeEmptyOnly'), description: t('aiModeEmptyOnlyHelp') },
+              { id: 'unreviewedOnly', label: t('aiModeUnreviewedOnly'), description: t('aiModeUnreviewedOnlyHelp') }
+            ]}
+            onChange={(value) => onSelect(value as Exclude<AiLabelMode, 'ask'>)}
+          />
+          <SettingSwitch
+            label={t('rememberAiMode')}
+            description=""
+            checked={remember}
+            onChange={onRememberChange}
+          />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ChoiceGrid({
+  value,
+  options,
+  onChange
+}: {
+  value: string;
+  options: Array<{ id: string; label: string; description: string }>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="choice-grid">
+      {options.map((option) => (
+        <button
+          key={option.id}
+          className={value === option.id ? 'choice-card active' : 'choice-card'}
+          onClick={() => onChange(option.id)}
+        >
+          <strong>{option.label}</strong>
+          <small>{option.description}</small>
+        </button>
+      ))}
     </div>
   );
 }
@@ -1507,6 +1949,25 @@ function createEmptyRendererProject(name = 'Untitled Dataset'): Project {
   };
 }
 
+function applyLocalProjectPreferences(project: Project): Project {
+  const modelPath = localStorage.getItem(MODEL_PATH_STORAGE_KEY);
+  const confidenceThreshold = loadAiConfidenceThreshold();
+  const namingPreset = loadNamingPreset();
+  const namingTemplate = localStorage.getItem(NAMING_TEMPLATE_STORAGE_KEY) || project.settings.namingTemplate || DEFAULT_NAMING_TEMPLATE;
+  const aiLabelMode = loadAiLabelMode();
+  return {
+    ...project,
+    settings: {
+      ...project.settings,
+      ...(modelPath ? { modelPath } : {}),
+      confidenceThreshold,
+      namingPreset,
+      namingTemplate,
+      aiLabelMode
+    }
+  };
+}
+
 function loadLanguage(): Language {
   const stored = localStorage.getItem(LANGUAGE_STORAGE_KEY);
   if (stored === 'en' || stored === 'zh') return stored;
@@ -1522,13 +1983,43 @@ function loadShortcuts(): ShortcutMap {
   }
 }
 
-function loadTheme(): Theme {
-  const stored = localStorage.getItem(THEME_STORAGE_KEY);
-  return stored === 'dark' ? 'dark' : 'light';
+function loadThemeMode(): ThemeMode {
+  const stored = localStorage.getItem(THEME_MODE_STORAGE_KEY);
+  if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
+  const legacy = localStorage.getItem(THEME_STORAGE_KEY);
+  return legacy === 'dark' ? 'dark' : 'light';
+}
+
+function currentSystemTheme(): Theme {
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
 function loadAutoReviewManualEdits(): boolean {
   return localStorage.getItem(AUTO_REVIEW_STORAGE_KEY) === 'true';
+}
+
+function loadBooleanPreference(key: string, defaultValue: boolean): boolean {
+  const stored = localStorage.getItem(key);
+  if (stored === 'true') return true;
+  if (stored === 'false') return false;
+  return defaultValue;
+}
+
+function loadNamingPreset(): NamingPreset {
+  const stored = localStorage.getItem(NAMING_PRESET_STORAGE_KEY);
+  if (stored === 'current' || stored === 'compact' || stored === 'shortFrame' || stored === 'singleTarget' || stored === 'frameOnly' || stored === 'custom') return stored;
+  return 'current';
+}
+
+function loadAiLabelMode(): AiLabelMode {
+  const stored = localStorage.getItem(AI_LABEL_MODE_STORAGE_KEY);
+  if (stored === 'ask' || stored === 'overwrite' || stored === 'emptyOnly' || stored === 'unreviewedOnly') return stored;
+  return 'ask';
+}
+
+function loadAiConfidenceThreshold(): number {
+  const stored = Number(localStorage.getItem(AI_CONFIDENCE_STORAGE_KEY));
+  return Number.isFinite(stored) && stored > 0 && stored < 1 ? stored : 0.25;
 }
 
 function validShortcutEntries(shortcuts: Partial<ShortcutMap>): Partial<ShortcutMap> {
@@ -1602,31 +2093,79 @@ function replaceImportedMedia(media: MediaItem[], event: Extract<MediaImportEven
   return replaced ? nextMedia : [...nextMedia, event.media];
 }
 
+function framesForAiMode(frames: FrameRecord[], mode: Exclude<AiLabelMode, 'ask'>): FrameRecord[] {
+  if (mode === 'overwrite') return frames;
+  if (mode === 'emptyOnly') return frames.filter((frame) => frame.annotations.length === 0);
+  return frames.filter((frame) => frame.reviewState !== 'reviewed');
+}
+
+function clearAnnotationsForFrames(project: Project, frameIds: Set<string>): Project {
+  return {
+    ...project,
+    media: project.media.map((media) => ({
+      ...media,
+      frames: media.frames.map((frame) =>
+        frameIds.has(frame.id) ? { ...frame, annotations: [], reviewState: 'unreviewed_ai' } : frame
+      )
+    })),
+    updatedAt: nowIso()
+  };
+}
+
 function mediaUrl(filePath: string): string {
   return window.labelingEasier?.mediaUrl(filePath) ?? `labeling-easier-media://file/${encodeURIComponent(filePath.replace(/\\/g, '/'))}`;
 }
 
-function nextAnnotationName(media: MediaItem, frame: FrameRecord): string {
-  return annotationNameAt(media, frame, frame.annotations.length + 1);
+function nextAnnotationName(media: MediaItem, frame: FrameRecord, preset: NamingPreset, customTemplate: string): string {
+  return annotationNameAt(media, frame, frame.annotations.length + 1, preset, customTemplate);
 }
 
-function annotationNameAt(media: MediaItem, frame: FrameRecord, boxIndex: number): string {
+function annotationNameAt(media: MediaItem, frame: FrameRecord, boxIndex: number, preset: NamingPreset, customTemplate: string): string {
   const prefix = sanitizePrefix(media.annotationNamePrefix || basenameWithoutExt(media.name));
-  return `${prefix}_${String(frame.index + 1).padStart(6, '0')}_${String(boxIndex).padStart(2, '0')}`;
+  const template = namingTemplateForPreset(preset, customTemplate);
+  const frameNumber = frame.index + 1;
+  return template
+    .replaceAll('{prefix}', prefix)
+    .replaceAll('{frame:000000}', String(frameNumber).padStart(6, '0'))
+    .replaceAll('{frame}', String(frameNumber))
+    .replaceAll('{box:00}', String(boxIndex).padStart(2, '0'))
+    .replaceAll('{box}', String(boxIndex));
 }
 
-function applyAiDetections(project: Project, frameId: string, detections: AiDetection[]): Project {
+function namingTemplateForPreset(preset: NamingPreset, customTemplate: string): string {
+  if (preset === 'custom') return customTemplate || DEFAULT_NAMING_TEMPLATE;
+  return NAMING_PRESETS.find((item) => item.id === preset)?.template ?? DEFAULT_NAMING_TEMPLATE;
+}
+
+function namingPresetLabel(preset: NamingPreset, t: (key: TextKey, params?: Record<string, string | number>) => string): string {
+  const labels: Record<NamingPreset, TextKey> = {
+    current: 'namingCurrent',
+    compact: 'namingCompact',
+    shortFrame: 'namingShortFrame',
+    singleTarget: 'namingSingleTarget',
+    frameOnly: 'namingFrameOnly',
+    custom: 'namingCustom'
+  };
+  return t(labels[preset]);
+}
+
+function applyAiDetections(
+  project: Project,
+  frameId: string,
+  detections: AiDetection[],
+  options: { replaceExisting: boolean; namingPreset: NamingPreset; namingTemplate: string }
+): Project {
   const media = project.media.find((item) => item.frames.some((frame) => frame.id === frameId));
   const frame = media?.frames.find((item) => item.id === frameId);
   if (!media || !frame) return project;
   const classes = ensureDetectionClasses(project.classes, detections);
-  const manualAnnotations = frame.annotations.filter((annotation) => annotation.source !== 'ai');
+  const manualAnnotations = options.replaceExisting ? [] : frame.annotations.filter((annotation) => annotation.source !== 'ai');
   const timestamp = nowIso();
   const aiAnnotations = detections.map((detection, index): Annotation => {
     const klass = classes.find((item) => item.name.toLowerCase() === detection.className.toLowerCase()) ?? classes[0];
     return {
       id: aiAnnotationId(frameId, index),
-      name: annotationNameAt(media, frame, manualAnnotations.length + index + 1),
+      name: annotationNameAt(media, frame, manualAnnotations.length + index + 1, options.namingPreset, options.namingTemplate),
       frameId,
       classId: klass.id,
       bbox: clampBbox(detection.bbox, media.width, media.height),

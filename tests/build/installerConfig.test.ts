@@ -9,9 +9,12 @@ describe('Windows installer upgrade behavior', () => {
     expect(manifest.build.productName).toBe('Labeling Easier');
     expect(manifest.build.nsis.oneClick).toBe(false);
     expect(manifest.build.nsis.perMachine).toBe(false);
-    expect(manifest.build.nsis.createDesktopShortcut).toBe(true);
+    expect(manifest.build.nsis.createDesktopShortcut).toBe('always');
     expect(manifest.build.nsis.createStartMenuShortcut).toBe(true);
     expect(manifest.build.nsis.shortcutName).toBe('Labeling Easier');
+    expect(manifest.build.nsis.installerIcon).toBe('resources/icon.ico');
+    expect(manifest.build.nsis.uninstallerIcon).toBe('resources/icon.ico');
+    expect(manifest.build.nsis.installerHeaderIcon).toBe('resources/icon.ico');
     expect(manifest.build.nsis.allowToChangeInstallationDirectory).toBe(false);
     expect(manifest.build.nsis.deleteAppDataOnUninstall).toBe(false);
   });
@@ -20,7 +23,7 @@ describe('Windows installer upgrade behavior', () => {
     const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
     const pruneScript = readFileSync('scripts/prune-release.mjs', 'utf8');
 
-    expect(manifest.version).toBe('0.1.5');
+    expect(manifest.version).toBe('0.1.6');
     expect(manifest.scripts.clean).toBe('node scripts/clean-build.mjs');
     expect(manifest.scripts.package).toContain('npm run clean');
     expect(manifest.scripts.package).toContain('node scripts/prune-release.mjs');
@@ -32,6 +35,7 @@ describe('Windows installer upgrade behavior', () => {
     const mainSource = readFileSync('src/main/main.ts', 'utf8');
 
     expect(manifest.build.win.icon).toBe('resources/icon.ico');
+    expect(manifest.build.win.signAndEditExecutable).not.toBe(false);
     expect(mainSource).toContain("app.setAppUserModelId('com.labelingeasier.app')");
     expect(mainSource).toContain('Menu.setApplicationMenu(null)');
     expect(mainSource).toContain('autoHideMenuBar: true');
