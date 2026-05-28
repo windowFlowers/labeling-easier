@@ -23,7 +23,7 @@ describe('Windows installer upgrade behavior', () => {
     const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
     const pruneScript = readFileSync('scripts/prune-release.mjs', 'utf8');
 
-    expect(manifest.version).toBe('0.1.7');
+    expect(manifest.version).toBe('0.1.8');
     expect(manifest.scripts.clean).toBe('node scripts/clean-build.mjs');
     expect(manifest.scripts.package).toContain('npm run clean');
     expect(manifest.scripts.package).toContain('node scripts/prune-release.mjs');

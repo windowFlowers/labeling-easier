@@ -1,6 +1,6 @@
 {
   "name": "labeling-easier",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Windows desktop dataset annotation tool for images, videos, AI-assisted YOLO labeling, review, and multi-format export.",
   "author": "CZX",
   "main": "dist-electron/main/main.js",
