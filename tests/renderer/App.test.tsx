@@ -32,6 +32,35 @@ const annotatedImageMedia: MediaItem = {
   }]
 };
 
+const multiAnnotationImageMedia: MediaItem = {
+  ...imageMedia,
+  frames: [{
+    ...imageMedia.frames[0],
+    annotations: [
+      {
+        id: 'ann-1',
+        name: 'frame001_000001_01',
+        frameId: 'frame-image',
+        classId: 'class-drone',
+        bbox: { x: 10, y: 10, width: 30, height: 20 },
+        source: 'manual',
+        reviewState: 'reviewed',
+        updatedAt: '2026-05-26T00:00:00.000Z'
+      },
+      {
+        id: 'ann-2',
+        name: 'frame001_000001_02',
+        frameId: 'frame-image',
+        classId: 'class-bird',
+        bbox: { x: 44, y: 18, width: 18, height: 24 },
+        source: 'manual',
+        reviewState: 'reviewed',
+        updatedAt: '2026-05-26T00:00:00.000Z'
+      }
+    ]
+  }]
+};
+
 const firstFrameAnnotation: Annotation = {
   id: 'ann-prev',
   name: 'clip_000001_01',
@@ -362,6 +391,35 @@ describe('Labeling Easier editor shell', () => {
     expect(screen.getByText('clip-000001-01')).toBeInTheDocument();
   });
 
+  it('renders settings select menus as overlays instead of growing the settings content scroller', () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Naming style: Current' }));
+
+    const menu = screen.getByRole('listbox', { name: 'Naming style' });
+    const settingsContent = document.querySelector('.settings-content');
+    expect(menu).toHaveClass('settings-select-menu');
+    expect(menu.parentElement).toBe(document.body);
+    expect(settingsContent?.contains(menu)).toBe(false);
+  });
+
+  it('stores box color preferences and supports a custom color in Appearance settings', () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Appearance' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Box color: Slate blue' }));
+    expect(localStorage.getItem('labeling-easier.boxColor')).toBe('slateBlue');
+
+    fireEvent.change(screen.getByLabelText('Custom color'), { target: { value: '#778899' } });
+    expect(localStorage.getItem('labeling-easier.boxColor')).toBe('custom');
+    expect(localStorage.getItem('labeling-easier.boxCustomColor')).toBe('#778899');
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Use different colors for multiple boxes' }));
+    expect(localStorage.getItem('labeling-easier.multiBoxColors')).toBe('true');
+  });
+
   it('uses a dropdown selector for AI label mode settings', () => {
     render(<App />);
 
@@ -428,6 +486,46 @@ describe('Labeling Easier editor shell', () => {
 
     expect(screen.getByDisplayValue('custom_box')).toBeInTheDocument();
     expect(screen.getByLabelText('Class')).toHaveValue('class-bird');
+  });
+
+  it('shows every current-frame box as a collapsible card and expands only the selected box', async () => {
+    window.labelingEasier = {
+      openFolder: vi.fn().mockResolvedValue({ ...projectFixture(), media: [multiAnnotationImageMedia] }),
+      mediaUrl: vi.fn((filePath: string) => `labeling-easier-media://file/${encodeURIComponent(filePath)}`),
+      onMediaImportEvent: vi.fn(() => () => {}),
+      onAiEvent: vi.fn(() => () => {})
+    } as unknown as Window['labelingEasier'];
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Folder' }));
+    await screen.findByTestId('annotation-card-ann-1');
+    expect(screen.getByTestId('annotation-card-ann-2')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('frame001_000001_01')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('frame001_000001_02')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('annotation-card-ann-2').querySelector('button') as HTMLElement);
+    expect(screen.getByDisplayValue('frame001_000001_02')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('frame001_000001_01')).not.toBeInTheDocument();
+  });
+
+  it('uses muted multi-box colors consistently on canvas and the annotation cards', async () => {
+    localStorage.setItem('labeling-easier.multiBoxColors', 'true');
+    window.labelingEasier = {
+      openFolder: vi.fn().mockResolvedValue({ ...projectFixture(), media: [multiAnnotationImageMedia] }),
+      mediaUrl: vi.fn((filePath: string) => `labeling-easier-media://file/${encodeURIComponent(filePath)}`),
+      onMediaImportEvent: vi.fn(() => () => {}),
+      onAiEvent: vi.fn(() => () => {})
+    } as unknown as Window['labelingEasier'];
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Folder' }));
+    await screen.findByTestId('bbox-ann-1');
+    expect(screen.getByTestId('bbox-ann-1')).toHaveStyle({ stroke: '#b66a55' });
+    expect(screen.getByTestId('bbox-ann-2')).toHaveStyle({ stroke: '#7d8b74' });
+    expect(screen.getByTestId('annotation-card-ann-1').querySelector('.annotation-card-summary > span')).toHaveStyle({ backgroundColor: '#b66a55' });
+    expect(screen.getByTestId('annotation-card-ann-2').querySelector('.annotation-card-summary > span')).toHaveStyle({ backgroundColor: '#7d8b74' });
   });
 
   it('uses the editable video prefix for new box names and shows real frame thumbnails', async () => {
@@ -726,6 +824,32 @@ describe('Labeling Easier editor shell', () => {
     expect(await screen.findByText('custom.pt')).toBeInTheDocument();
     expect(localStorage.getItem('labeling-easier.modelPath')).toBe('C:/models/custom.pt');
     expect(screen.queryByLabelText('Download advanced model')).not.toBeInTheDocument();
+  });
+
+  it('stores multiple local models, lets the user switch models, and supports custom model names', async () => {
+    window.labelingEasier = {
+      bundledModelPath: vi.fn().mockResolvedValue('C:/app/resources/models/yolov8n.pt'),
+      chooseModelFiles: vi.fn().mockResolvedValue(['C:/models/alpha.pt', 'C:/models/beta.onnx']),
+      mediaUrl: vi.fn((filePath: string) => `labeling-easier-media://file/${encodeURIComponent(filePath)}`),
+      onMediaImportEvent: vi.fn(() => () => {}),
+      onAiEvent: vi.fn(() => () => {})
+    } as unknown as Window['labelingEasier'];
+
+    render(<App />);
+
+    expect(await screen.findByText('yolov8n.pt')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Choose local model' }));
+    expect(await screen.findByText('alpha.pt')).toBeInTheDocument();
+    expect(localStorage.getItem('labeling-easier.models')).toContain('beta.onnx');
+    expect(localStorage.getItem('labeling-easier.modelPath')).toBe('C:/models/alpha.pt');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'AI labeling' }));
+    fireEvent.change(screen.getAllByLabelText('Model name')[1], { target: { value: 'Fast local model' } });
+    expect(localStorage.getItem('labeling-easier.models')).toContain('Fast local model');
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Use model' })[2]);
+    expect(localStorage.getItem('labeling-easier.modelPath')).toBe('C:/models/beta.onnx');
   });
 
   it('restores the last session and still saves a session snapshot when autosave is disabled', async () => {

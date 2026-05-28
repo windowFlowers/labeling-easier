@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent, WheelEvent } from 'react';
+import { createPortal } from 'react-dom';
 import type { AiDetection, AiWorkerEvent } from '../main/services/aiWorker';
 import { nowIso, stableId } from '../shared/ids';
 import { markFrameReviewed } from '../shared/review';
@@ -43,6 +44,14 @@ type HistoryEntry = {
 type Language = 'en' | 'zh';
 type Theme = 'light' | 'dark';
 type SettingsTab = 'general' | 'appearance' | 'shortcuts' | 'ai';
+type SavedModelSource = 'bundled' | 'local';
+type SavedModel = {
+  id: string;
+  name: string;
+  path: string;
+  source: SavedModelSource;
+};
+type BoxColorPreset = 'terracotta' | 'sage' | 'slateBlue' | 'mistTeal' | 'ochre' | 'mauve' | 'custom';
 type ShortcutAction =
   | 'draw'
   | 'previousFrame'
@@ -64,6 +73,15 @@ const EXPORT_OPTIONS: Array<{ value: LabelFormat; label: string }> = [
 
 const DEFAULT_CLASSES: LabelClass[] = [{ id: 'class-object', name: 'object', color: '#c96442' }];
 const CLASS_COLORS = ['#c96442', '#5e5d59', '#3898ec', '#6a9955', '#b57f2a', '#8f5ad7'];
+const BOX_COLOR_PRESETS: Array<{ id: BoxColorPreset; labelKey: string; value: string }> = [
+  { id: 'terracotta', labelKey: 'boxColorTerracotta', value: '#b66a55' },
+  { id: 'sage', labelKey: 'boxColorSage', value: '#7d8b74' },
+  { id: 'slateBlue', labelKey: 'boxColorSlateBlue', value: '#6f7f99' },
+  { id: 'mistTeal', labelKey: 'boxColorMistTeal', value: '#6f9690' },
+  { id: 'ochre', labelKey: 'boxColorOchre', value: '#a58655' },
+  { id: 'mauve', labelKey: 'boxColorMauve', value: '#8d7389' },
+  { id: 'custom', labelKey: 'boxColorCustom', value: '#b66a55' }
+];
 const ZOOM_MIN = 0.25;
 const ZOOM_MAX = 8;
 const LANGUAGE_STORAGE_KEY = 'labeling-easier.language';
@@ -72,12 +90,17 @@ const THEME_STORAGE_KEY = 'labeling-easier.theme';
 const THEME_MODE_STORAGE_KEY = 'labeling-easier.themeMode';
 const AUTO_REVIEW_STORAGE_KEY = 'labeling-easier.autoReviewManualEdits';
 const MODEL_PATH_STORAGE_KEY = 'labeling-easier.modelPath';
+const MODELS_STORAGE_KEY = 'labeling-easier.models';
+const ACTIVE_MODEL_STORAGE_KEY = 'labeling-easier.activeModelId';
 const AUTO_SAVE_STORAGE_KEY = 'labeling-easier.autoSave';
 const AUTO_REVIEW_SEEN_STORAGE_KEY = 'labeling-easier.autoReviewSeenFrames';
 const NAMING_PRESET_STORAGE_KEY = 'labeling-easier.namingPreset';
 const NAMING_TEMPLATE_STORAGE_KEY = 'labeling-easier.namingTemplate';
 const AI_LABEL_MODE_STORAGE_KEY = 'labeling-easier.aiLabelMode';
 const AI_CONFIDENCE_STORAGE_KEY = 'labeling-easier.aiConfidenceThreshold';
+const BOX_COLOR_STORAGE_KEY = 'labeling-easier.boxColor';
+const BOX_CUSTOM_COLOR_STORAGE_KEY = 'labeling-easier.boxCustomColor';
+const MULTI_BOX_COLORS_STORAGE_KEY = 'labeling-easier.multiBoxColors';
 const DEFAULT_NAMING_TEMPLATE = '{prefix}_{frame:000000}_{box:00}';
 const DEFAULT_SHORTCUTS: ShortcutMap = {
   draw: 'F',
@@ -158,6 +181,18 @@ const TEXT = {
     darkModeHelp: 'Use a darker interface while keeping media colors unchanged.',
     followSystemTheme: 'Follow system theme',
     followSystemThemeHelp: 'Use the operating system light or dark preference.',
+    boxColors: 'Box colors',
+    boxColor: 'Box color',
+    customBoxColor: 'Custom color',
+    multiBoxColors: 'Use different colors for multiple boxes',
+    multiBoxColorsHelp: 'Boxes in the current frame cycle through a muted palette.',
+    boxColorTerracotta: 'Terracotta',
+    boxColorSage: 'Sage',
+    boxColorSlateBlue: 'Slate blue',
+    boxColorMistTeal: 'Mist teal',
+    boxColorOchre: 'Ochre',
+    boxColorMauve: 'Mauve',
+    boxColorCustom: 'Custom',
     editShortcut: 'Edit {label} shortcut',
     pressShortcut: 'Press shortcut...',
     shortcutConflict: '{shortcut} is already used by {label}.',
@@ -190,8 +225,16 @@ const TEXT = {
     noModelSelected: 'No model selected',
     useBundledModel: 'Use bundled YOLOv8n',
     chooseLocalModel: 'Choose local model',
+    addLocalModels: 'Add local models',
+    modelLibrary: 'Model library',
+    modelName: 'Model name',
+    useModel: 'Use model',
+    removeModel: 'Remove model',
+    bundledModel: 'Bundled',
+    localModel: 'Local',
     downloadAdvancedModel: 'Download advanced model',
     selectModel: 'Select model',
+    noSavedModels: 'No saved models',
     runAiLabels: 'Run AI labels',
     export: 'Export',
     exportLabels: 'Export labels',
@@ -276,6 +319,18 @@ const TEXT = {
     darkModeHelp: '切换为深色界面，图片和视频本身不变。',
     followSystemTheme: '跟随系统暗色模式',
     followSystemThemeHelp: '使用操作系统当前的亮色或暗色偏好。',
+    boxColors: '标注框颜色',
+    boxColor: '框颜色',
+    customBoxColor: '自定义颜色',
+    multiBoxColors: '多个框使用不同颜色',
+    multiBoxColorsHelp: '当前帧的标注框会按低饱和调色板循环显示。',
+    boxColorTerracotta: '陶土',
+    boxColorSage: '鼠尾草',
+    boxColorSlateBlue: '灰蓝',
+    boxColorMistTeal: '雾青',
+    boxColorOchre: '赭石',
+    boxColorMauve: '灰紫',
+    boxColorCustom: '自定义',
     editShortcut: '编辑{label}快捷键',
     pressShortcut: '按下快捷键...',
     shortcutConflict: '{shortcut} 已被 {label} 使用。',
@@ -308,8 +363,16 @@ const TEXT = {
     noModelSelected: '未选择模型',
     useBundledModel: '使用内置 YOLOv8n',
     chooseLocalModel: '选择本机模型',
+    addLocalModels: '添加本机模型',
+    modelLibrary: '模型库',
+    modelName: '模型名称',
+    useModel: '使用模型',
+    removeModel: '移除模型',
+    bundledModel: '内置',
+    localModel: '本机',
     downloadAdvancedModel: '下载高级模型',
     selectModel: '选择模型',
+    noSavedModels: '暂无保存的模型',
     runAiLabels: '运行 AI 标注',
     export: '导出',
     exportLabels: '导出标签',
@@ -387,6 +450,11 @@ export default function App() {
   const [namingTemplate, setNamingTemplateState] = useState(() => localStorage.getItem(NAMING_TEMPLATE_STORAGE_KEY) || DEFAULT_NAMING_TEMPLATE);
   const [aiLabelMode, setAiLabelModeState] = useState<AiLabelMode>(() => loadAiLabelMode());
   const [aiConfidenceThreshold, setAiConfidenceThresholdState] = useState(() => loadAiConfidenceThreshold());
+  const [savedModels, setSavedModelsState] = useState<SavedModel[]>(() => loadSavedModels());
+  const [activeModelId, setActiveModelIdState] = useState(() => loadActiveModelId());
+  const [boxColorPreset, setBoxColorPresetState] = useState<BoxColorPreset>(() => loadBoxColorPreset());
+  const [boxCustomColor, setBoxCustomColorState] = useState(() => loadBoxCustomColor());
+  const [multiBoxColors, setMultiBoxColorsState] = useState(() => loadBooleanPreference(MULTI_BOX_COLORS_STORAGE_KEY, false));
   const [activeMediaId, setActiveMediaId] = useState('');
   const [activeFrameId, setActiveFrameId] = useState('');
   const [selectedAnnotationId, setSelectedAnnotationId] = useState('');
@@ -421,6 +489,15 @@ export default function App() {
   const selectedAnnotation = activeFrame?.annotations.find((annotation) => annotation.id === selectedAnnotationId);
   const reviewQueue = allFrames.filter((frame) => frame.reviewState === 'unreviewed_ai' || frame.reviewState === 'modified');
   const effectiveTheme: Theme = themeMode === 'system' ? systemTheme : themeMode;
+  const modelSelectOptions = savedModels.map((model) => ({
+    id: model.id,
+    label: model.name,
+    description: `${model.source === 'bundled' ? t('bundledModel') : t('localModel')} · ${basename(model.path)}`
+  }));
+  const selectedModelId = savedModels.find((model) => model.id === activeModelId)?.id
+    ?? savedModels.find((model) => model.path === project.settings.modelPath)?.id
+    ?? savedModels[0]?.id
+    ?? '';
 
   useEffect(() => {
     activeFrameIdRef.current = activeFrameId;
@@ -515,6 +592,73 @@ export default function App() {
     setProjectState((current) => ({ ...current, settings: { ...current.settings, confidenceThreshold: normalized }, updatedAt: nowIso() }));
   }
 
+  function setSavedModels(nextModels: SavedModel[]) {
+    setSavedModelsState(nextModels);
+    localStorage.setItem(MODELS_STORAGE_KEY, JSON.stringify(nextModels));
+  }
+
+  function activateModel(model: SavedModel | undefined) {
+    const modelId = model?.id ?? '';
+    const modelPath = model?.path ?? '';
+    setActiveModelIdState(modelId);
+    if (modelId) {
+      localStorage.setItem(ACTIVE_MODEL_STORAGE_KEY, modelId);
+    } else {
+      localStorage.removeItem(ACTIVE_MODEL_STORAGE_KEY);
+    }
+    if (modelPath) {
+      localStorage.setItem(MODEL_PATH_STORAGE_KEY, modelPath);
+    } else {
+      localStorage.removeItem(MODEL_PATH_STORAGE_KEY);
+    }
+    setProjectState((current) => ({ ...current, settings: { ...current.settings, modelPath }, updatedAt: nowIso() }));
+  }
+
+  function upsertModels(models: SavedModel[], activateFirst = false) {
+    if (!models.length) return;
+    let nextModels: SavedModel[] = [];
+    setSavedModelsState((current) => {
+      nextModels = mergeModels(current, models);
+      localStorage.setItem(MODELS_STORAGE_KEY, JSON.stringify(nextModels));
+      return nextModels;
+    });
+    if (activateFirst) activateModel(models[0]);
+  }
+
+  function selectSavedModel(modelId: string) {
+    activateModel(savedModels.find((model) => model.id === modelId));
+  }
+
+  function renameSavedModel(modelId: string, name: string) {
+    const nextModels = savedModels.map((model) => (model.id === modelId ? { ...model, name } : model));
+    setSavedModels(nextModels);
+  }
+
+  function removeSavedModel(modelId: string) {
+    const target = savedModels.find((model) => model.id === modelId);
+    if (!target || target.source === 'bundled') return;
+    const nextModels = savedModels.filter((model) => model.id !== modelId);
+    setSavedModels(nextModels);
+    if (modelId === selectedModelId) {
+      activateModel(nextModels[0]);
+    }
+  }
+
+  function setBoxColorPreset(nextValue: BoxColorPreset) {
+    setBoxColorPresetState(nextValue);
+    localStorage.setItem(BOX_COLOR_STORAGE_KEY, nextValue);
+  }
+
+  function setBoxCustomColor(nextValue: string) {
+    setBoxCustomColorState(nextValue);
+    localStorage.setItem(BOX_CUSTOM_COLOR_STORAGE_KEY, nextValue);
+  }
+
+  function setMultiBoxColors(nextValue: boolean) {
+    setMultiBoxColorsState(nextValue);
+    localStorage.setItem(MULTI_BOX_COLORS_STORAGE_KEY, String(nextValue));
+  }
+
   function setProjectState(updater: (current: Project) => Project) {
     setProject((current) => updater(current));
   }
@@ -584,18 +728,20 @@ export default function App() {
   useEffect(() => {
     const api = window.labelingEasier;
     if (!sessionHydrated || !api?.bundledModelPath) return;
-    if (project.settings.modelPath || localStorage.getItem(MODEL_PATH_STORAGE_KEY)) return;
     let cancelled = false;
     void api.bundledModelPath().then((modelPath) => {
       if (cancelled) return;
-      setProjectState((current) =>
-        current.settings.modelPath ? current : { ...current, settings: { ...current.settings, modelPath } }
-      );
+      const model = savedModelFromPath(modelPath, 'bundled', 'YOLOv8n');
+      upsertModels([model], false);
+      const storedModelPath = localStorage.getItem(MODEL_PATH_STORAGE_KEY);
+      if (!project.settings.modelPath && !storedModelPath) {
+        activateModel(model);
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [sessionHydrated, project.settings.modelPath]);
+  }, [sessionHydrated]);
 
   useEffect(() => {
     const api = window.labelingEasier;
@@ -942,18 +1088,16 @@ export default function App() {
     const api = desktopApi('Use bundled model');
     if (!api?.bundledModelPath) return;
     const modelPath = await api.bundledModelPath();
-    localStorage.setItem(MODEL_PATH_STORAGE_KEY, modelPath);
-    setProjectState((current) => ({ ...current, settings: { ...current.settings, modelPath }, updatedAt: nowIso() }));
+    const model = savedModelFromPath(modelPath, 'bundled', 'YOLOv8n');
+    upsertModels([model], true);
   }
 
   async function chooseLocalModel() {
     const api = desktopApi('Choose local model');
-    if (!api?.chooseModelFile) return;
-    const modelPath = await api.chooseModelFile();
-    if (modelPath) {
-      localStorage.setItem(MODEL_PATH_STORAGE_KEY, modelPath);
-      setProjectState((current) => ({ ...current, settings: { ...current.settings, modelPath }, updatedAt: nowIso() }));
-    }
+    if (!api?.chooseModelFiles && !api?.chooseModelFile) return;
+    const modelPaths = api.chooseModelFiles ? await api.chooseModelFiles() : [await api.chooseModelFile()];
+    const models = modelPaths.filter((modelPath): modelPath is string => Boolean(modelPath)).map((modelPath) => savedModelFromPath(modelPath, 'local'));
+    upsertModels(models, true);
   }
 
   async function runAi() {
@@ -1181,6 +1325,9 @@ export default function App() {
             media={activeMedia}
             classes={project.classes}
             selectedAnnotationId={selectedAnnotationId}
+            boxColorPreset={boxColorPreset}
+            boxCustomColor={boxCustomColor}
+            multiBoxColors={multiBoxColors}
             mode={mode}
             draftBox={draftBox}
             zoom={zoom}
@@ -1222,57 +1369,71 @@ export default function App() {
           ) : null}
 
           <div className="annotation-list">
-            {activeFrame?.annotations.map((annotation) => {
+            {activeFrame?.annotations.map((annotation, index) => {
               const klass = project.classes.find((item) => item.id === annotation.classId);
+              const selected = annotation.id === selectedAnnotationId;
+              const color = boxColorForAnnotation(index, boxColorPreset, boxCustomColor, multiBoxColors);
               return (
-                <button
+                <div
                   key={annotation.id}
-                  className={annotation.id === selectedAnnotationId ? 'annotation-row selected' : 'annotation-row'}
-                  onClick={() => setSelectedAnnotationId(annotation.id)}
+                  className={selected ? 'annotation-card selected expanded' : 'annotation-card'}
+                  data-testid={`annotation-card-${annotation.id}`}
                 >
-                  <span style={{ backgroundColor: klass?.color }} />
-                  <div>
-                    <strong>{annotation.name}</strong>
-                    <small>{klass?.name ?? 'unknown'} · {annotation.source}{annotation.confidence ? ` · ${(annotation.confidence * 100).toFixed(0)}%` : ''}</small>
+                  <button className="annotation-card-summary" onClick={() => setSelectedAnnotationId(annotation.id)}>
+                    <span style={{ backgroundColor: color }} />
+                    <div>
+                      <strong>{annotation.name}</strong>
+                      <small>{klass?.name ?? 'unknown'} · {annotation.source}{annotation.confidence ? ` · ${(annotation.confidence * 100).toFixed(0)}%` : ''}</small>
+                    </div>
+                    <ChevronDown size={15} />
+                  </button>
+                  <div className="annotation-card-body" aria-hidden={!selected}>
+                    {selected ? (
+                      <div className="annotation-editor">
+                        <label>
+                          {t('boxName')}
+                          <input value={annotation.name} onChange={(event) => updateSelectedAnnotation({ name: event.target.value })} />
+                        </label>
+                        <label>
+                          {t('class')}
+                          <select value={annotation.classId} onChange={(event) => updateSelectedAnnotation({ classId: event.target.value })}>
+                            {project.classes.map((klassItem) => (
+                              <option key={klassItem.id} value={klassItem.id}>{klassItem.name}</option>
+                            ))}
+                          </select>
+                        </label>
+                        {(['x', 'y', 'width', 'height'] as Array<keyof Bbox>).map((field) => (
+                          <label key={field}>
+                            {field}
+                            <input type="number" value={Math.round(annotation.bbox[field])} onChange={(event) => updateSelectedBbox(field, Number(event.target.value))} />
+                          </label>
+                        ))}
+                        <button className="danger" onClick={deleteSelectedAnnotation}>
+                          <Trash2 size={16} /> {t('deleteBox')}
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
-
-          {selectedAnnotation ? (
-            <div className="inspector">
-              <h3>{t('box')}</h3>
-              <label>
-                {t('boxName')}
-                <input value={selectedAnnotation.name} onChange={(event) => updateSelectedAnnotation({ name: event.target.value })} />
-              </label>
-              <label>
-                {t('class')}
-                <select value={selectedAnnotation.classId} onChange={(event) => updateSelectedAnnotation({ classId: event.target.value })}>
-                  {project.classes.map((klass) => (
-                    <option key={klass.id} value={klass.id}>{klass.name}</option>
-                  ))}
-                </select>
-              </label>
-              {(['x', 'y', 'width', 'height'] as Array<keyof Bbox>).map((field) => (
-                <label key={field}>
-                  {field}
-                  <input type="number" value={Math.round(selectedAnnotation.bbox[field])} onChange={(event) => updateSelectedBbox(field, Number(event.target.value))} />
-                </label>
-              ))}
-              <button className="danger" onClick={deleteSelectedAnnotation}>
-                <Trash2 size={16} /> {t('deleteBox')}
-              </button>
-            </div>
-          ) : null}
 
           <div className="settings-panel">
             <h3>{t('aiExport')}</h3>
             <div className="model-current">
               <span>{t('currentModel')}</span>
-              <strong>{modelFileName(project.settings.modelPath, t)}</strong>
+              <strong>{savedModels.find((model) => model.id === selectedModelId)?.name ?? modelFileName(project.settings.modelPath, t)}</strong>
+              {project.settings.modelPath ? <small>{basename(project.settings.modelPath)}</small> : null}
             </div>
+            {modelSelectOptions.length ? (
+              <SettingsSelect
+                label={t('selectModel')}
+                value={selectedModelId}
+                options={modelSelectOptions}
+                onChange={selectSavedModel}
+              />
+            ) : null}
             <button onClick={chooseBundledModel}>{t('useBundledModel')}</button>
             <button onClick={chooseLocalModel}>{t('chooseLocalModel')}</button>
             {aiProgress.running || aiProgress.total ? (
@@ -1325,6 +1486,11 @@ export default function App() {
           previewFrame={activeFrame}
           aiLabelMode={aiLabelMode}
           aiConfidenceThreshold={aiConfidenceThreshold}
+          savedModels={savedModels}
+          activeModelId={selectedModelId}
+          boxColorPreset={boxColorPreset}
+          boxCustomColor={boxCustomColor}
+          multiBoxColors={multiBoxColors}
           recordingShortcut={recordingShortcut}
           shortcutError={shortcutError}
           t={t}
@@ -1338,6 +1504,13 @@ export default function App() {
           onNamingTemplateChange={setNamingTemplate}
           onAiLabelModeChange={setAiLabelMode}
           onAiConfidenceThresholdChange={setAiConfidenceThreshold}
+          onChooseLocalModels={chooseLocalModel}
+          onSelectModel={selectSavedModel}
+          onRenameModel={renameSavedModel}
+          onRemoveModel={removeSavedModel}
+          onBoxColorPresetChange={setBoxColorPreset}
+          onBoxCustomColorChange={setBoxCustomColor}
+          onMultiBoxColorsChange={setMultiBoxColors}
           onOpenExternal={(url) => void window.labelingEasier?.openExternal?.(url)}
           onRecord={(action) => {
             setShortcutError('');
@@ -1382,6 +1555,11 @@ function SettingsDialog({
   previewFrame,
   aiLabelMode,
   aiConfidenceThreshold,
+  savedModels,
+  activeModelId,
+  boxColorPreset,
+  boxCustomColor,
+  multiBoxColors,
   recordingShortcut,
   shortcutError,
   t,
@@ -1395,6 +1573,13 @@ function SettingsDialog({
   onNamingTemplateChange,
   onAiLabelModeChange,
   onAiConfidenceThresholdChange,
+  onChooseLocalModels,
+  onSelectModel,
+  onRenameModel,
+  onRemoveModel,
+  onBoxColorPresetChange,
+  onBoxCustomColorChange,
+  onMultiBoxColorsChange,
   onOpenExternal,
   onRecord,
   onReset,
@@ -1413,6 +1598,11 @@ function SettingsDialog({
   previewFrame?: FrameRecord;
   aiLabelMode: AiLabelMode;
   aiConfidenceThreshold: number;
+  savedModels: SavedModel[];
+  activeModelId: string;
+  boxColorPreset: BoxColorPreset;
+  boxCustomColor: string;
+  multiBoxColors: boolean;
   recordingShortcut?: ShortcutAction;
   shortcutError: string;
   t: (key: TextKey, params?: Record<string, string | number>) => string;
@@ -1426,6 +1616,13 @@ function SettingsDialog({
   onNamingTemplateChange: (template: string) => void;
   onAiLabelModeChange: (mode: AiLabelMode) => void;
   onAiConfidenceThresholdChange: (value: number) => void;
+  onChooseLocalModels: () => void;
+  onSelectModel: (modelId: string) => void;
+  onRenameModel: (modelId: string, name: string) => void;
+  onRemoveModel: (modelId: string) => void;
+  onBoxColorPresetChange: (preset: BoxColorPreset) => void;
+  onBoxCustomColorChange: (color: string) => void;
+  onMultiBoxColorsChange: (enabled: boolean) => void;
   onOpenExternal: (url: string) => void;
   onRecord: (action: ShortcutAction) => void;
   onReset: () => void;
@@ -1443,6 +1640,11 @@ function SettingsDialog({
     id: preset.id,
     label: namingPresetLabel(preset.id, t),
     description: preset.id === 'custom' ? namingTemplate : preset.example
+  }));
+  const modelOptions = savedModels.map((model) => ({
+    id: model.id,
+    label: model.name,
+    description: `${model.source === 'bundled' ? t('bundledModel') : t('localModel')} · ${basename(model.path)}`
   }));
   const confidenceProgress = ((aiConfidenceThreshold - 0.01) / 0.98) * 100;
   const tabs: Array<{ id: SettingsTab; label: string }> = [
@@ -1544,6 +1746,22 @@ function SettingsDialog({
                   checked={effectiveTheme === 'dark'}
                   onChange={(checked) => onThemeModeChange(checked ? 'dark' : 'light')}
                 />
+                <div className="settings-subsection">
+                  <h4>{t('boxColors')}</h4>
+                  <BoxColorPicker
+                    value={boxColorPreset}
+                    customColor={boxCustomColor}
+                    t={t}
+                    onChange={onBoxColorPresetChange}
+                    onCustomColorChange={onBoxCustomColorChange}
+                  />
+                  <SettingSwitch
+                    label={t('multiBoxColors')}
+                    description={t('multiBoxColorsHelp')}
+                    checked={multiBoxColors}
+                    onChange={onMultiBoxColorsChange}
+                  />
+                </div>
               </div>
             ) : null}
             {activeTab === 'shortcuts' ? (
@@ -1609,6 +1827,39 @@ function SettingsDialog({
                   options={aiModeOptions}
                   onChange={(value) => onAiLabelModeChange(value as AiLabelMode)}
                 />
+                <div className="settings-subsection">
+                  <div className="settings-section-heading">
+                    <h4>{t('modelLibrary')}</h4>
+                    <button onClick={onChooseLocalModels}>{t('addLocalModels')}</button>
+                  </div>
+                  {modelOptions.length ? (
+                    <SettingsSelect
+                      label={t('selectModel')}
+                      value={activeModelId || modelOptions[0].id}
+                      options={modelOptions}
+                      onChange={onSelectModel}
+                    />
+                  ) : (
+                    <p className="settings-help">{t('noSavedModels')}</p>
+                  )}
+                  <div className="model-library-list">
+                    {savedModels.map((model) => (
+                      <div key={model.id} className={model.id === activeModelId ? 'model-library-row active' : 'model-library-row'}>
+                        <label>
+                          {t('modelName')}
+                          <input value={model.name} onChange={(event) => onRenameModel(model.id, event.target.value)} />
+                        </label>
+                        <small>{model.source === 'bundled' ? t('bundledModel') : t('localModel')} · {model.path}</small>
+                        <div className="model-library-actions">
+                          <button onClick={() => onSelectModel(model.id)}>{t('useModel')}</button>
+                          {model.source === 'local' ? (
+                            <button className="danger" onClick={() => onRemoveModel(model.id)}>{t('removeModel')}</button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
                 <div className="link-list">
                   <strong>{t('aiModelLinks')}</strong>
                   {AI_MODEL_LINKS.map((link) => (
@@ -1671,6 +1922,53 @@ function AiModeDialog({
   );
 }
 
+function BoxColorPicker({
+  value,
+  customColor,
+  t,
+  onChange,
+  onCustomColorChange
+}: {
+  value: BoxColorPreset;
+  customColor: string;
+  t: (key: TextKey, params?: Record<string, string | number>) => string;
+  onChange: (value: BoxColorPreset) => void;
+  onCustomColorChange: (value: string) => void;
+}) {
+  return (
+    <div className="box-color-picker">
+      <div className="color-choice-grid" role="group" aria-label={t('boxColor')}>
+        {BOX_COLOR_PRESETS.map((preset) => {
+          const active = value === preset.id;
+          const color = preset.id === 'custom' ? normalizeHexColor(customColor, preset.value) : preset.value;
+          return (
+            <button
+              key={preset.id}
+              className={active ? 'color-choice active' : 'color-choice'}
+              aria-label={`${t('boxColor')}: ${t(preset.labelKey as TextKey)}`}
+              onClick={() => onChange(preset.id)}
+            >
+              <span className="color-swatch" style={{ backgroundColor: color }} />
+              <span>{t(preset.labelKey as TextKey)}</span>
+            </button>
+          );
+        })}
+      </div>
+      <label>
+        {t('customBoxColor')}
+        <input
+          value={customColor}
+          onChange={(event) => {
+            onCustomColorChange(event.target.value);
+            onChange('custom');
+          }}
+          placeholder="#6f7f99"
+        />
+      </label>
+    </div>
+  );
+}
+
 function SettingsSelect({
   label,
   value,
@@ -1683,52 +1981,99 @@ function SettingsSelect({
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>({});
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const selected = options.find((option) => option.id === value) ?? options[0];
 
-  return (
+  const updateMenuPosition = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setMenuStyle({
+      position: 'fixed',
+      top: rect.bottom + 4,
+      left: rect.left,
+      width: rect.width,
+      maxHeight: Math.max(160, Math.min(360, window.innerHeight - rect.bottom - 16))
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    updateMenuPosition();
+    const closeOnOutsidePointer = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (target && (rootRef.current?.contains(target) || menuRef.current?.contains(target))) return;
+      setOpen(false);
+    };
+    const reposition = () => updateMenuPosition();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsidePointer);
+    document.addEventListener('keydown', closeOnEscape);
+    window.addEventListener('resize', reposition);
+    window.addEventListener('scroll', reposition, true);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+    };
+  }, [open, updateMenuPosition]);
+
+  const menu = open ? (
     <div
-      className="settings-select"
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
-      }}
+      ref={menuRef}
+      className="settings-select-menu"
+      role="listbox"
+      aria-label={label}
+      style={menuStyle}
     >
+      {options.map((option) => {
+        const active = option.id === value;
+        return (
+          <button
+            key={option.id}
+            className={active ? 'settings-select-option active' : 'settings-select-option'}
+            role="option"
+            aria-label={option.label}
+            aria-selected={active}
+            onClick={() => {
+              onChange(option.id);
+              setOpen(false);
+            }}
+          >
+            <span>
+              <strong>{option.label}</strong>
+              <small>{option.description}</small>
+            </span>
+            {active ? <Check size={18} /> : null}
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
+
+  return (
+    <div className="settings-select" ref={rootRef}>
       <span className="settings-select-label">{label}</span>
       <button
+        ref={triggerRef}
         className="settings-select-trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={`${label}: ${selected.label}`}
-        onClick={() => setOpen((current) => !current)}
+        aria-label={`${label}: ${selected?.label ?? ''}`}
+        onClick={() => {
+          updateMenuPosition();
+          setOpen((current) => !current);
+        }}
       >
-        <span>{selected.label}</span>
+        <span>{selected?.label ?? label}</span>
         <ChevronDown size={17} />
       </button>
-      {open ? (
-        <div className="settings-select-menu" role="listbox" aria-label={label}>
-          {options.map((option) => {
-            const active = option.id === value;
-            return (
-              <button
-                key={option.id}
-                className={active ? 'settings-select-option active' : 'settings-select-option'}
-                role="option"
-                aria-label={option.label}
-                aria-selected={active}
-                onClick={() => {
-                  onChange(option.id);
-                  setOpen(false);
-                }}
-              >
-                <span>
-                  <strong>{option.label}</strong>
-                  <small>{option.description}</small>
-                </span>
-                {active ? <Check size={18} /> : null}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
+      {menu ? createPortal(menu, document.body) : null}
     </div>
   );
 }
@@ -1793,6 +2138,9 @@ function AnnotationCanvas({
   media,
   classes,
   selectedAnnotationId,
+  boxColorPreset,
+  boxCustomColor,
+  multiBoxColors,
   mode,
   draftBox,
   zoom,
@@ -1810,6 +2158,9 @@ function AnnotationCanvas({
   media?: MediaItem;
   classes: Project['classes'];
   selectedAnnotationId: string;
+  boxColorPreset: BoxColorPreset;
+  boxCustomColor: string;
+  multiBoxColors: boolean;
   mode: ToolMode;
   draftBox?: Bbox;
   zoom: number;
@@ -1920,9 +2271,9 @@ function AnnotationCanvas({
           onPointerUp={endPointer}
           onPointerLeave={endPointer}
         >
-          {frame.annotations.map((annotation) => {
-            const klass = classes.find((item) => item.id === annotation.classId);
+          {frame.annotations.map((annotation, index) => {
             const selected = annotation.id === selectedAnnotationId;
+            const color = boxColorForAnnotation(index, boxColorPreset, boxCustomColor, multiBoxColors);
             const startMove = (event: PointerEvent<SVGRectElement>) => {
               event.stopPropagation();
               const point = pointFromEvent(event as unknown as PointerEvent<SVGSVGElement>);
@@ -1955,7 +2306,7 @@ function AnnotationCanvas({
                   width={annotation.bbox.width}
                   height={annotation.bbox.height}
                   className={selected ? 'bbox selected' : 'bbox'}
-                  style={{ stroke: klass?.color ?? '#c96442' }}
+                  style={{ stroke: color, fill: hexToRgba(color, 0.12) }}
                   onPointerDown={startMove}
                 />
                 <text x={annotation.bbox.x} y={Math.max(14, annotation.bbox.y - 8)}>{annotation.name}</text>
@@ -2031,7 +2382,7 @@ function createEmptyRendererProject(name = 'Untitled Dataset'): Project {
 }
 
 function applyLocalProjectPreferences(project: Project): Project {
-  const modelPath = localStorage.getItem(MODEL_PATH_STORAGE_KEY);
+  const modelPath = loadActiveModelPath();
   const confidenceThreshold = loadAiConfidenceThreshold();
   const namingPreset = loadNamingPreset();
   const namingTemplate = localStorage.getItem(NAMING_TEMPLATE_STORAGE_KEY) || project.settings.namingTemplate || DEFAULT_NAMING_TEMPLATE;
@@ -2101,6 +2452,57 @@ function loadAiLabelMode(): AiLabelMode {
 function loadAiConfidenceThreshold(): number {
   const stored = Number(localStorage.getItem(AI_CONFIDENCE_STORAGE_KEY));
   return Number.isFinite(stored) && stored > 0 && stored < 1 ? stored : 0.25;
+}
+
+function loadSavedModels(): SavedModel[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MODELS_STORAGE_KEY) ?? '[]') as SavedModel[];
+    const validModels = parsed.filter((model) => model?.id && model?.name && model?.path && (model.source === 'bundled' || model.source === 'local'));
+    const legacyPath = localStorage.getItem(MODEL_PATH_STORAGE_KEY);
+    return legacyPath ? mergeModels(validModels, [savedModelFromPath(legacyPath, 'local')]) : validModels;
+  } catch {
+    const legacyPath = localStorage.getItem(MODEL_PATH_STORAGE_KEY);
+    return legacyPath ? [savedModelFromPath(legacyPath, 'local')] : [];
+  }
+}
+
+function loadActiveModelId(): string {
+  return localStorage.getItem(ACTIVE_MODEL_STORAGE_KEY) ?? '';
+}
+
+function loadActiveModelPath(): string {
+  const models = loadSavedModels();
+  const activeModelId = loadActiveModelId();
+  const activeModel = models.find((model) => model.id === activeModelId) ?? models[0];
+  return activeModel?.path ?? localStorage.getItem(MODEL_PATH_STORAGE_KEY) ?? '';
+}
+
+function savedModelFromPath(modelPath: string, source: SavedModelSource, fallbackName?: string): SavedModel {
+  return {
+    id: stableId('model', [modelPath]),
+    name: fallbackName || basenameWithoutExt(modelPath),
+    path: modelPath,
+    source
+  };
+}
+
+function mergeModels(current: SavedModel[], incoming: SavedModel[]): SavedModel[] {
+  const byPath = new Map(current.map((model) => [normalizePath(model.path), model]));
+  for (const model of incoming) {
+    const key = normalizePath(model.path);
+    byPath.set(key, { ...model, name: byPath.get(key)?.name || model.name });
+  }
+  return Array.from(byPath.values());
+}
+
+function loadBoxColorPreset(): BoxColorPreset {
+  const stored = localStorage.getItem(BOX_COLOR_STORAGE_KEY);
+  if (BOX_COLOR_PRESETS.some((preset) => preset.id === stored)) return stored as BoxColorPreset;
+  return 'terracotta';
+}
+
+function loadBoxCustomColor(): string {
+  return normalizeHexColor(localStorage.getItem(BOX_CUSTOM_COLOR_STORAGE_KEY) ?? '#6f7f99', '#6f7f99');
 }
 
 function validShortcutEntries(shortcuts: Partial<ShortcutMap>): Partial<ShortcutMap> {
@@ -2387,6 +2789,29 @@ function basenameWithoutExt(filePath: string): string {
 
 function modelFileName(modelPath: string, t: (key: TextKey, params?: Record<string, string | number>) => string): string {
   return modelPath ? basename(modelPath) : t('noModelSelected');
+}
+
+function boxColorForAnnotation(index: number, preset: BoxColorPreset, customColor: string, multiBoxColors: boolean): string {
+  if (multiBoxColors) {
+    const palette = BOX_COLOR_PRESETS.filter((item) => item.id !== 'custom').map((item) => item.value);
+    return palette[index % palette.length];
+  }
+  return preset === 'custom'
+    ? normalizeHexColor(customColor, BOX_COLOR_PRESETS[0].value)
+    : BOX_COLOR_PRESETS.find((item) => item.id === preset)?.value ?? BOX_COLOR_PRESETS[0].value;
+}
+
+function normalizeHexColor(value: string, fallback: string): string {
+  const trimmed = value.trim();
+  return /^#[0-9a-fA-F]{6}$/.test(trimmed) ? trimmed : fallback;
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const normalized = normalizeHexColor(hex, '#b66a55').slice(1);
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }
 
 function normalizePath(filePath: string): string {

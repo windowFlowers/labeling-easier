@@ -51,6 +51,7 @@ const api = {
   fileExists: (filePath: string): Promise<boolean> => ipcRenderer.invoke('file.exists', filePath),
   bundledModelPath: (): Promise<string> => ipcRenderer.invoke('model.bundledPath'),
   chooseModelFile: (): Promise<string | undefined> => ipcRenderer.invoke('model.chooseFile'),
+  chooseModelFiles: (): Promise<string[]> => ipcRenderer.invoke('model.chooseFiles'),
   downloadModel: (model: AdvancedModelName): Promise<string> => ipcRenderer.invoke('model.download', model),
   onMediaImportEvent: (listener: (event: MediaImportEvent) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: MediaImportEvent) => listener(payload);

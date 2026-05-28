@@ -311,6 +311,13 @@ function registerIpc(): void {
     });
     return result.canceled ? undefined : result.filePaths[0];
   });
+  ipcMain.handle('model.chooseFiles', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'YOLO model', extensions: ['pt', 'onnx'] }]
+    });
+    return result.canceled ? [] : result.filePaths;
+  });
   ipcMain.handle('model.download', async (_event, model: AdvancedModelName) => downloadAdvancedModel(model, app.getPath('userData')));
   ipcMain.handle('export.run', async (_event, project: Project, format: LabelFormat) => exportProject(project, format));
   ipcMain.handle('export.toDirectory', async (_event, project: Project, format: LabelFormat): Promise<ExportWriteResult> => {
